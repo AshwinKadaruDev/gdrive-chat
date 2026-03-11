@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
-import { BookOpen, Search, Zap, LogOut } from "lucide-react";
+import { BookOpen, Search, Zap, LogOut, Sun, Moon } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { useTheme } from "@/hooks/useTheme";
 import TenexLogo from "@/components/TenexLogo";
 
 const tabs = [
@@ -34,9 +35,10 @@ function UserAvatar({ name, pictureUrl }: { name: string; pictureUrl: string | n
 
 export default function TopBar() {
   const { user, logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
 
   return (
-    <header className="flex items-center border-b border-white/[0.08] bg-surface-950 px-6">
+    <header className="flex items-center border-b border-[var(--border-subtle)] bg-surface-950 px-6">
       <TenexLogo iconSize={24} className="mr-8" />
 
       <nav className="flex gap-1">
@@ -48,7 +50,7 @@ export default function TopBar() {
               `flex items-center gap-2 border-b-2 px-4 py-3.5 text-sm font-medium transition-colors ${
                 isActive
                   ? "border-brand-500 text-brand-500"
-                  : "border-transparent text-surface-100 hover:text-white"
+                  : "border-transparent text-surface-100 hover:text-fg-primary"
               }`
             }
           >
@@ -64,6 +66,13 @@ export default function TopBar() {
             <UserAvatar name={user.name} pictureUrl={user.picture_url} />
             <span className="text-sm text-surface-100">{user.name}</span>
           </div>
+          <button
+            onClick={toggleTheme}
+            className="btn-ghost px-2 py-1.5 text-surface-100 hover:text-fg-primary"
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
           <button
             onClick={logout}
             className="btn-ghost px-2 py-1.5 text-surface-100 hover:text-red-400"

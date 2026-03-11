@@ -3,8 +3,46 @@
 @tailwind utilities;
 
 @layer base {
+  /* Dark theme (default) */
+  .dark {
+    --surface-950: 0 0 0;
+    --surface-900: 10 10 10;
+    --surface-850: 17 17 17;
+    --surface-800: 26 26 26;
+    --surface-700: 34 34 34;
+    --surface-100: 170 170 170;
+    --surface-50: 240 238 229;
+    --brand-500: 255 229 1;
+    --color-cream: 240 238 229;
+    --fg-primary: #FFFFFF;
+    --fg-inverted: #000000;
+    --border-subtle: rgba(255, 255, 255, 0.08);
+    --hover-overlay: rgba(255, 255, 255, 0.04);
+  }
+
+  /* Light theme */
+  html:not(.dark) {
+    --surface-950: 255 255 255;
+    --surface-900: 250 250 250;
+    --surface-850: 255 255 255;
+    --surface-800: 245 245 245;
+    --surface-700: 229 229 229;
+    --surface-100: 107 114 128;
+    --surface-50: 55 65 81;
+    --brand-500: 234 210 0;
+    --color-cream: 23 23 23;
+    --fg-primary: #000000;
+    --fg-inverted: #FFFFFF;
+    --border-subtle: rgba(0, 0, 0, 0.1);
+    --hover-overlay: rgba(0, 0, 0, 0.04);
+  }
+
   html {
     color-scheme: dark;
+  }
+
+  html:not(.dark) {
+    color-scheme: light;
   }
 
   body {
@@ -34,11 +72,11 @@
 
 @layer components {
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 bg-white px-5 py-2.5 text-sm font-medium text-black transition-colors hover:bg-brand-500 hover:text-black focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-2 bg-fg-primary px-5 py-2.5 text-sm font-medium text-fg-inverted transition-colors hover:bg-brand-500 hover:text-black focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
   .btn-secondary {
-    @apply inline-flex items-center justify-center gap-2 border border-white/[0.08] bg-transparent px-5 py-2.5 text-sm font-medium text-cream transition-colors hover:border-brand-500 hover:text-white focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-2 border border-[var(--border-subtle)] bg-transparent px-5 py-2.5 text-sm font-medium text-cream transition-colors hover:border-brand-500 hover:text-fg-primary focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
   .btn-danger {
@@ -46,14 +84,14 @@
   }
 
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-medium text-cream transition-colors hover:bg-white/[0.04] hover:text-white focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-medium text-cream transition-colors hover:bg-[var(--hover-overlay)] hover:text-fg-primary focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
   .card {
-    @apply rounded-lg border border-white/[0.08] bg-surface-850 p-5 transition-colors hover:border-brand-500;
+    @apply rounded-lg border border-[var(--border-subtle)] bg-surface-850 p-5 transition-colors hover:border-brand-500;
   }
 
   .input-field {
-    @apply w-full border border-white/[0.08] bg-surface-800 px-4 py-2.5 text-sm text-white placeholder-surface-100 transition-colors focus:border-brand-500 focus:outline-none;
+    @apply w-full border border-[var(--border-subtle)] bg-surface-800 px-4 py-2.5 text-sm text-fg-primary placeholder-surface-100 transition-colors focus:border-brand-500 focus:outline-none;
   }
 }

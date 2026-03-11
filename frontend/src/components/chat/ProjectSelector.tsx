@@ -6,6 +6,7 @@ interface ProjectSelectorProps {
   selected: Project | null;
   onSelect: (project: Project) => void;
   label?: string;
+  onAddFolder?: () => void;
 }
 
 export default function ProjectSelector({
@@ -13,6 +14,7 @@ export default function ProjectSelector({
   selected,
   onSelect,
   label = "Chat with",
+  onAddFolder,
 }: ProjectSelectorProps) {
   return (
     <div className="relative">
@@ -24,6 +26,11 @@ export default function ProjectSelector({
         <select
           value={selected?.id ?? ""}
           onChange={(e) => {
+            if (e.target.value === "__add_new__") {
+              onAddFolder?.();
+              e.target.value = selected?.id ?? "";
+              return;
+            }
             const project = projects.find((p) => p.id === e.target.value);
             if (project) onSelect(project);
           }}
@@ -37,6 +44,12 @@ export default function ProjectSelector({
               {project.name} ({project.files_total} files)
             </option>
           ))}
+          {onAddFolder && (
+            <>
+              <option disabled>──────────</option>
+              <option value="__add_new__">+ Add new folder...</option>
+            </>
+          )}
         </select>
         <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-surface-100" />
       </div>

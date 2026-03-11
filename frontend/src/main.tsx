@@ -5,6 +5,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import "./index.css";
 
+// Apply saved theme synchronously to prevent flash of wrong theme
+const savedTheme = localStorage.getItem("tenex-theme");
+if (savedTheme === "light") {
+  document.documentElement.classList.remove("dark");
+  document.documentElement.style.colorScheme = "light";
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

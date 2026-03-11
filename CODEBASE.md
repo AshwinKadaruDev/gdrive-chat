@@ -551,6 +551,7 @@ Failed files are logged and skipped — processing continues with remaining file
 | Concern | Tool | Location |
 |---------|------|----------|
 | Auth (user session) | Zustand | `hooks/useAuth.ts` |
+| Theme (light/dark) | Zustand | `hooks/useTheme.ts` |
 | Server data (projects, sessions, messages) | React Query | `hooks/useProjects.ts`, `hooks/useChat.ts` |
 | Local UI (modals, inputs, temp messages) | useState | Component-level |
 
@@ -619,7 +620,7 @@ Three-tab layout behind auth gate:
 
 ### Styling
 
-Dark-mode only. Tailwind 3.4 with custom `@layer components` classes:
+Dark/light theme via CSS variables + `darkMode: "class"`. Tailwind 3.4 with custom `@layer components` classes:
 - `btn-primary`, `btn-secondary`, `btn-danger`, `btn-ghost`
 - `card` (rounded-xl, border, shadow, `bg-surface-850`)
 - `input-field` (focus ring brand-500, border transition)

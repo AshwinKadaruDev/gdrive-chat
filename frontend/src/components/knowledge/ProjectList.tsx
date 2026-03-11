@@ -14,7 +14,7 @@ export default function ProjectList() {
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-semibold text-white">Knowledge Base</h2>
+            <h2 className="text-xl font-semibold text-fg-primary">Knowledge Base</h2>
             <p className="mt-1 text-sm text-surface-100">
               Connect Google Drive folders to build your searchable knowledge
               base.
@@ -58,7 +58,7 @@ export default function ProjectList() {
         )}
 
         {!isLoading && !error && projects?.length === 0 && (
-          <div className="flex flex-col items-center justify-center border-2 border-dashed border-white/[0.08] py-20">
+          <div className="flex flex-col items-center justify-center border-2 border-dashed border-[var(--border-subtle)] py-20">
             <FolderOpen className="h-12 w-12 text-surface-700" />
             <h3 className="mt-4 text-base font-medium text-surface-100">
               No folders connected

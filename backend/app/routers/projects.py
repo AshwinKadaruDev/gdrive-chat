@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 
@@ -21,6 +22,8 @@ from app.schemas.project import (
 )
 from app.services.google_drive import DriveValidationError, GoogleDriveService
 from app.utils.security import decrypt_token
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -176,15 +179,29 @@ async def create_project(
         except Exception:
             name = folder_id  # last-resort fallback
 
+    # Count files so the card shows the correct total immediately
+    files_total = 0
+    try:
+        access_token = decrypt_token(user.google_access_token, settings)
+        files_total = await GoogleDriveService().count_files(folder_id, access_token)
+        logger.info("[PROJECT] Counted %d files in folder %s", files_total, folder_id)
+    except Exception as exc:
+        logger.warning("[PROJECT] Could not count files for %s: %s", folder_id, exc)
+
     project = Project(
         user_id=user.id,
         name=name,
         gdrive_folder_id=folder_id,
         gdrive_folder_url=body.gdrive_folder_url,
         sync_status=ProjectStatus.PENDING,
+        files_total=files_total,
     )
     db.add(project)
     await db.flush()
+    logger.info(
+        "[PROJECT] Created project id=%s name=%s folder_id=%s files_total=%d",
+        project.id, project.name, project.gdrive_folder_id, project.files_total,
+    )
     return project
 
 

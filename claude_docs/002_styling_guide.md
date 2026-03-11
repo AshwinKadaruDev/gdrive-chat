@@ -419,16 +419,21 @@ When the agent quotes or references a specific file section, highlight it with a
 
 ---
 
-## 7. Dark Mode Notes
+## 7. Theme System
 
-The entire application is dark-mode by default (black canvas). There is **no light mode toggle** — the dark aesthetic is core to the Tenex brand identity.
+The app supports **dark** (default) and **light** themes via CSS variables + Tailwind's `class` strategy.
 
-If you later need a light variant for embedded contexts:
-- Swap `--bg-app` to `#FFFFFF`
-- Swap `--text-primary` to `#000000`
-- Swap `--text-body` to `#333333`
-- Keep `--color-yellow` as `#FFE501` (it works on both light and dark)
-- Adjust `--bg-user-bubble` to `#F5F5F5`
+### How it works
+- `useTheme` Zustand store manages theme state, persisted in `localStorage` (`tenex-theme` key)
+- Toggle button in `TopBar` (Sun/Moon icons)
+- `<html>` has `class="dark"` by default; `main.tsx` applies saved theme synchronously before render
+- Colors defined as CSS variables in `index.css` (`@layer base`), using space-separated RGB channels for Tailwind alpha modifier compatibility (`bg-brand-500/10`)
+- Semantic tokens `--fg-primary`, `--fg-inverted`, `--border-subtle`, `--hover-overlay` adapt per theme
+
+### CSS variable conventions
+- Surface/brand/cream colors: use RGB channels (`--surface-950: 0 0 0`) → consumed via `rgb(var(--surface-950) / <alpha-value>)` in Tailwind config
+- Semantic colors: use plain hex/rgba (`--fg-primary: #FFFFFF`) → consumed via `var(--fg-primary)` directly
+- In components: use `text-fg-primary` instead of `text-white`, `border-[var(--border-subtle)]` instead of `border-white/[0.08]`, `bg-fg-primary` instead of `bg-white`
 
 
 ---

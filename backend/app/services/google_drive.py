@@ -1,4 +1,8 @@
+import logging
+
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class DriveValidationError(Exception):
@@ -26,9 +30,28 @@ class GoogleDriveService:
         Returns a flat list of file metadata dicts with keys:
         id, name, mimeType, size, modifiedTime, parents, webViewLink.
         """
+        logger.info("[DRIVE] list_folder called for folder_id=%s", folder_id)
         all_files: list[dict] = []
         await self._list_folder_recursive(folder_id, access_token, all_files)
+        file_count = sum(
+            1 for f in all_files
+            if f.get("mimeType") != "application/vnd.google-apps.folder"
+        )
+        logger.info(
+            "[DRIVE] list_folder complete: %d items total, %d non-folder files",
+            len(all_files), file_count,
+        )
         return all_files
+
+    async def count_files(self, folder_id: str, access_token: str) -> int:
+        """Count non-folder files recursively in a Google Drive folder."""
+        all_items = await self.list_folder(folder_id, access_token)
+        count = sum(
+            1 for f in all_items
+            if f.get("mimeType") != "application/vnd.google-apps.folder"
+        )
+        logger.info("[DRIVE] count_files: folder=%s → %d files", folder_id, count)
+        return count
 
     async def _list_folder_recursive(
         self,
@@ -55,6 +78,13 @@ class GoogleDriveService:
                     headers=headers,
                     params=params,
                 )
+                logger.info(
+                    "[DRIVE] API list folder_id=%s → status=%d, items=%s",
+                    folder_id, response.status_code,
+                    len(response.json().get("files", [])) if response.status_code == 200 else "N/A",
+                )
+                if response.status_code != 200:
+                    logger.error("[DRIVE] API error: %s", response.text[:500])
                 response.raise_for_status()
                 data = response.json()
 
@@ -63,6 +93,7 @@ class GoogleDriveService:
                 accumulator.append(file)
                 # If the file is a folder, recurse into it
                 if file.get("mimeType") == "application/vnd.google-apps.folder":
+                    logger.info("[DRIVE] Recursing into subfolder: %s (id=%s)", file["name"], file["id"])
                     await self._list_folder_recursive(
                         file["id"], access_token, accumulator
                     )
@@ -111,6 +142,7 @@ class GoogleDriveService:
 
         Returns a list of file metadata dicts matching the query.
         """
+        logger.info("[DRIVE] search_files: folder=%s query=%r file_types=%s", folder_id, query, file_types)
         headers = {"Authorization": f"Bearer {access_token}"}
 
         # Build the query: scoped to folder, full-text search, not trashed
@@ -149,14 +181,19 @@ class GoogleDriveService:
                     headers=headers,
                     params=params,
                 )
+                if response.status_code != 200:
+                    logger.error("[DRIVE] search_files API error: status=%d body=%s", response.status_code, response.text[:500])
                 response.raise_for_status()
                 data = response.json()
 
-            all_files.extend(data.get("files", []))
+            batch = data.get("files", [])
+            logger.info("[DRIVE] search_files: got %d results in this page", len(batch))
+            all_files.extend(batch)
             page_token = data.get("nextPageToken")
             if not page_token:
                 break
 
+        logger.info("[DRIVE] search_files: returning %d results total", min(len(all_files), max_results))
         return all_files[:max_results]
 
     async def validate_folder(self, folder_id: str, access_token: str) -> dict:

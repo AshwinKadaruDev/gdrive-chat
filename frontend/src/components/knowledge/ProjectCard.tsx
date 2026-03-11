@@ -95,7 +95,7 @@ export default function ProjectCard({ project }: ProjectCardProps) {
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-sm font-semibold text-white">
+          <h3 className="truncate text-sm font-semibold text-fg-primary">
             {displayProject.name}
           </h3>
           {displayProject.gdrive_folder_url && (
@@ -132,7 +132,7 @@ export default function ProjectCard({ project }: ProjectCardProps) {
       <div className="flex items-center gap-4 text-xs text-surface-100">
         <span className="flex items-center gap-1">
           <FileText className="h-3.5 w-3.5 text-brand-500" />
-          {displayProject.files_processed}/{displayProject.files_total} files
+          {displayProject.files_total} files
         </span>
         <span className="flex items-center gap-1">
           <Clock className="h-3.5 w-3.5" />
@@ -141,7 +141,7 @@ export default function ProjectCard({ project }: ProjectCardProps) {
       </div>
 
       {/* Actions */}
-      <div className="flex items-center gap-2 border-t border-white/[0.08] pt-3">
+      <div className="flex items-center gap-2 border-t border-[var(--border-subtle)] pt-3">
         <button
           onClick={handleSync}
           disabled={syncProject.isPending || isActive}

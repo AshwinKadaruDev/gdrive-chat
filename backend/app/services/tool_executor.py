@@ -65,10 +65,12 @@ async def execute_tool(
 
     handler = handlers.get(tool_name)
     if handler is None:
+        logger.warning("[TOOL] Unknown tool requested: %s", tool_name)
         return f"Unknown tool: {tool_name}", []
 
+    logger.info("[TOOL] Executing %s(args=%s, project_id=%s)", tool_name, tool_args, project_id)
     try:
-        return await handler(
+        result_str, citations = await handler(
             tool_args=tool_args,
             project_id=project_id,
             access_token=access_token,
@@ -76,8 +78,13 @@ async def execute_tool(
             drive_service=drive_service,
             embeddings_service=embeddings_service,
         )
+        logger.info(
+            "[TOOL] %s completed: result_length=%d, citations=%d",
+            tool_name, len(result_str), len(citations),
+        )
+        return result_str, citations
     except Exception as exc:
-        logger.exception("Error executing tool %s: %s", tool_name, exc)
+        logger.exception("[TOOL] Error executing %s: %s", tool_name, exc)
         return f"Error executing {tool_name}: {exc}", []
 
 

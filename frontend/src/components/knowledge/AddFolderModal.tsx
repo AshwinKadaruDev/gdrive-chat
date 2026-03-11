@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useCreateProject, useValidateFolder } from "@/hooks/useProjects";
 import { X, FolderPlus, Loader2, Check } from "lucide-react";
+import type { Project } from "@/types";
 
 interface AddFolderModalProps {
   onClose: () => void;
+  onCreated?: (project: Project) => void;
 }
 
 const GDRIVE_URL_PATTERN =
@@ -44,7 +46,7 @@ function getErrorMessage(error: unknown): string {
   return "Please enter a valid Google Drive folder URL.";
 }
 
-export default function AddFolderModal({ onClose }: AddFolderModalProps) {
+export default function AddFolderModal({ onClose, onCreated }: AddFolderModalProps) {
   const [url, setUrl] = useState("");
   const [state, setState] = useState<ModalState>("idle");
   const [folderName, setFolderName] = useState("");
@@ -121,7 +123,8 @@ export default function AddFolderModal({ onClose }: AddFolderModalProps) {
 
   const handleBlur = () => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (url) doValidate(url);
+    // Only validate on blur if we haven't validated yet (avoid double-fire)
+    if (url && state !== "validated" && state !== "validating") doValidate(url);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -130,10 +133,11 @@ export default function AddFolderModal({ onClose }: AddFolderModalProps) {
 
     setState("creating");
     try {
-      await createProject.mutateAsync({
+      const newProject = await createProject.mutateAsync({
         gdrive_folder_url: url.trim(),
         name: folderName,
       });
+      onCreated?.(newProject);
       onClose();
     } catch (err) {
       setState("error");
@@ -150,18 +154,18 @@ export default function AddFolderModal({ onClose }: AddFolderModalProps) {
       />
 
       {/* Modal */}
-      <div className="relative mx-4 w-full max-w-md border border-white/[0.08] bg-surface-850 p-6 shadow-2xl">
+      <div className="relative mx-4 w-full max-w-md border border-[var(--border-subtle)] bg-surface-850 p-6 shadow-2xl">
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <FolderPlus className="h-5 w-5 text-brand-500" />
-            <h2 className="text-lg font-semibold text-white">
+            <h2 className="text-lg font-semibold text-fg-primary">
               Add Google Drive Folder
             </h2>
           </div>
           <button
             onClick={onClose}
-            className="p-1 text-surface-100 transition-colors hover:text-white"
+            className="p-1 text-surface-100 transition-colors hover:text-fg-primary"
           >
             <X className="h-5 w-5" />
           </button>
@@ -206,7 +210,7 @@ export default function AddFolderModal({ onClose }: AddFolderModalProps) {
 
           {state === "validated" && folderName && (
             <div className="flex items-center justify-between rounded border border-green-500/20 bg-green-950/20 px-3 py-2">
-              <div className="flex items-center gap-2 text-sm text-white">
+              <div className="flex items-center gap-2 text-sm text-fg-primary">
                 <span>📁</span>
                 <span className="font-medium">{folderName}</span>
               </div>

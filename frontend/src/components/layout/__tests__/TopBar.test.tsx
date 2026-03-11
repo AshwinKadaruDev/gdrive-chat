@@ -1,12 +1,22 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import TopBar from "../TopBar";
+
+const mockToggleTheme = vi.fn();
+let mockTheme = "dark";
 
 vi.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({
     user: { id: "1", name: "Test User", email: "test@example.com", picture_url: null },
     logout: vi.fn(),
+  }),
+}));
+
+vi.mock("@/hooks/useTheme", () => ({
+  useTheme: () => ({
+    theme: mockTheme,
+    toggleTheme: mockToggleTheme,
   }),
 }));
 
@@ -44,5 +54,16 @@ describe("TopBar", () => {
   it("renders sign out button", () => {
     renderTopBar();
     expect(screen.getByTitle("Sign out")).toBeInTheDocument();
+  });
+
+  it("renders theme toggle button", () => {
+    renderTopBar();
+    expect(screen.getByTitle("Switch to light mode")).toBeInTheDocument();
+  });
+
+  it("calls toggleTheme when theme button is clicked", () => {
+    renderTopBar();
+    fireEvent.click(screen.getByTitle("Switch to light mode"));
+    expect(mockToggleTheme).toHaveBeenCalledOnce();
   });
 });

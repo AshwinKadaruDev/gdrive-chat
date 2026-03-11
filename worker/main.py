@@ -17,6 +17,7 @@ from worker.activities.chunk_content import chunk_content
 from worker.activities.generate_embeddings import generate_embeddings
 from worker.activities.generate_questions import generate_questions
 from worker.activities.index_chunks import index_chunks
+from worker.activities.update_project import update_project
 from worker.workflows.sync_folder import SyncFolderWorkflow
 
 TASK_QUEUE = "talk-to-folder-sync"
@@ -58,6 +59,7 @@ async def run_worker() -> None:
             generate_embeddings,
             generate_questions,
             index_chunks,
+            update_project,
         ],
     )
 

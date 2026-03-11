@@ -57,15 +57,15 @@ export default function CitationTooltip({
       {isVisible && (
         <div
           ref={tooltipRef}
-          className="absolute bottom-full left-1/2 z-50 mb-2 w-80 -translate-x-1/2 rounded-lg border border-white/[0.08] bg-surface-850 p-3 shadow-2xl"
+          className="absolute bottom-full left-1/2 z-50 mb-2 w-80 -translate-x-1/2 rounded-lg border border-[var(--border-subtle)] bg-surface-850 p-3 shadow-2xl"
         >
           {/* Arrow */}
-          <div className="absolute -bottom-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 rounded-sm border-b border-r border-white/[0.08] bg-surface-850" />
+          <div className="absolute -bottom-1.5 left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 rounded-sm border-b border-r border-[var(--border-subtle)] bg-surface-850" />
 
           {/* File name */}
           <div className="mb-2 flex items-center gap-2">
             <FileText className="h-4 w-4 flex-shrink-0 text-brand-500" />
-            <span className="truncate text-sm font-semibold text-white">
+            <span className="truncate text-sm font-semibold text-fg-primary">
               {citation.file_name}
             </span>
           </div>

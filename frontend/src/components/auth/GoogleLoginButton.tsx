@@ -7,7 +7,7 @@ export default function GoogleLoginButton() {
   return (
     <button
       onClick={login}
-      className="flex w-full items-center justify-center gap-3 bg-white px-6 py-3 text-sm font-medium text-black transition-colors hover:bg-brand-500"
+      className="flex w-full items-center justify-center gap-3 bg-fg-primary px-6 py-3 text-sm font-medium text-fg-inverted transition-colors hover:bg-brand-500"
     >
       <svg
         className="h-4 w-4"

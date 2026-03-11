@@ -43,7 +43,7 @@ export default function ChatInput({
   };
 
   return (
-    <div className="border-t border-white/[0.08] bg-surface-800 px-4 py-3">
+    <div className="border-t border-[var(--border-subtle)] bg-surface-800 px-4 py-3">
       <div className="mx-auto max-w-3xl">
         <div className="flex items-end gap-3">
           <textarea
@@ -54,12 +54,12 @@ export default function ChatInput({
             placeholder="Ask a question about your documents..."
             disabled={isLoading || disabled}
             rows={1}
-            className="max-h-40 min-h-[40px] flex-1 resize-none bg-transparent px-2 py-1.5 text-[15px] text-white placeholder-surface-100 focus:outline-none disabled:opacity-50"
+            className="max-h-40 min-h-[40px] flex-1 resize-none bg-transparent px-2 py-1.5 text-[15px] text-fg-primary placeholder-surface-100 focus:outline-none disabled:opacity-50"
           />
           <button
             onClick={handleSubmit}
             disabled={!value.trim() || isLoading || disabled}
-            className="flex h-9 w-9 flex-shrink-0 items-center justify-center bg-white text-black transition-colors hover:bg-brand-500 disabled:opacity-30"
+            className="flex h-9 w-9 flex-shrink-0 items-center justify-center bg-fg-primary text-fg-inverted transition-colors hover:bg-brand-500 disabled:opacity-30"
           >
             <Send className="h-4 w-4" />
           </button>

@@ -17,11 +17,15 @@ const completedProject = {
   created_at: "2025-01-01T00:00:00Z",
 };
 
+const mockUseProjects = vi.fn(() => ({
+  data: [completedProject],
+  isLoading: false,
+}));
+
 vi.mock("@/hooks/useProjects", () => ({
-  useProjects: () => ({
-    data: [completedProject],
-    isLoading: false,
-  }),
+  useProjects: () => mockUseProjects(),
+  useCreateProject: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false }),
+  useValidateFolder: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@/hooks/useUnifiedChat", () => ({
@@ -81,5 +85,18 @@ describe("UnifiedChatContainer", () => {
   it("renders history label in sidebar", () => {
     renderWith("RAG");
     expect(screen.getByText("History")).toBeInTheDocument();
+  });
+
+  it("shows add-folder CTA when no qualified projects exist", () => {
+    mockUseProjects.mockReturnValue({ data: [], isLoading: false });
+    renderWith("DRIVE");
+    expect(screen.getByText("No folders connected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add a folder/i })).toBeInTheDocument();
+    mockUseProjects.mockReturnValue({ data: [completedProject], isLoading: false });
+  });
+
+  it("renders 'Add new folder' option in project selector dropdown", () => {
+    renderWith("DRIVE");
+    expect(screen.getByText("+ Add new folder...")).toBeInTheDocument();
   });
 });

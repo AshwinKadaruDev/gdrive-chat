@@ -7,7 +7,8 @@ import {
 import ProjectSelector from "./ProjectSelector";
 import MessageList from "./MessageList";
 import ChatInput from "./ChatInput";
-import { MessageSquare, Plus, Clock } from "lucide-react";
+import AddFolderModal from "@/components/knowledge/AddFolderModal";
+import { MessageSquare, Plus, Clock, FolderPlus } from "lucide-react";
 import type { Project, AgentType, ChatSession } from "@/types";
 
 interface Props {
@@ -16,6 +17,7 @@ interface Props {
 
 export default function UnifiedChatContainer({ agentType }: Props) {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [showAddModal, setShowAddModal] = useState(false);
   const { data: projects, isLoading: projectsLoading } = useProjects();
 
   const projectId = selectedProject?.id ?? null;
@@ -67,12 +69,24 @@ export default function UnifiedChatContainer({ agentType }: Props) {
       <div className="flex h-full flex-col items-center justify-center px-6 text-center">
         <MessageSquare className="h-12 w-12 text-surface-700" />
         <h3 className="mt-4 text-base font-medium text-surface-100">
-          No folders ready
+          No folders connected
         </h3>
         <p className="mt-2 max-w-sm text-sm text-surface-100/60">
-          Add a Google Drive folder in the Knowledge tab and wait for it to
-          finish syncing before you can start chatting.
+          Connect a Google Drive folder to start searching your documents.
         </p>
+        <button
+          onClick={() => setShowAddModal(true)}
+          className="btn-primary mt-6"
+        >
+          <FolderPlus className="h-4 w-4" />
+          Add a folder
+        </button>
+        {showAddModal && (
+          <AddFolderModal
+            onClose={() => setShowAddModal(false)}
+            onCreated={(project) => setSelectedProject(project)}
+          />
+        )}
       </div>
     );
   }
@@ -80,8 +94,8 @@ export default function UnifiedChatContainer({ agentType }: Props) {
   return (
     <div className="flex h-full">
       {/* Sidebar: Session History */}
-      <div className="hidden w-[280px] flex-col border-r border-white/[0.08] bg-surface-850 lg:flex">
-        <div className="border-b border-white/[0.08] p-4">
+      <div className="hidden w-[280px] flex-col border-r border-[var(--border-subtle)] bg-surface-850 lg:flex">
+        <div className="border-b border-[var(--border-subtle)] p-4">
           <button
             onClick={startNewChat}
             className="btn-primary w-full py-2 text-sm"
@@ -103,8 +117,8 @@ export default function UnifiedChatContainer({ agentType }: Props) {
                   onClick={() => selectSession(session.id)}
                   className={`w-full border-l-[3px] px-6 py-2.5 text-left text-sm transition-colors ${
                     sessionId === session.id
-                      ? "border-l-brand-500 bg-brand-500/[0.06] text-white"
-                      : "border-l-transparent text-cream hover:bg-white/[0.04]"
+                      ? "border-l-brand-500 bg-brand-500/[0.06] text-fg-primary"
+                      : "border-l-transparent text-cream hover:bg-[var(--hover-overlay)]"
                   }`}
                 >
                   <div className="flex items-center gap-2">
@@ -131,11 +145,12 @@ export default function UnifiedChatContainer({ agentType }: Props) {
       {/* Main Chat Area */}
       <div className="flex flex-1 flex-col bg-surface-950">
         {/* Project Selector Bar */}
-        <div className="border-b border-white/[0.08] px-4 py-3">
+        <div className="border-b border-[var(--border-subtle)] px-4 py-3">
           <ProjectSelector
             projects={qualifiedProjects}
             selected={selectedProject}
             onSelect={setSelectedProject}
+            onAddFolder={() => setShowAddModal(true)}
           />
         </div>
 
@@ -160,6 +175,13 @@ export default function UnifiedChatContainer({ agentType }: Props) {
           </>
         )}
       </div>
+
+      {showAddModal && (
+        <AddFolderModal
+          onClose={() => setShowAddModal(false)}
+          onCreated={(project) => setSelectedProject(project)}
+        />
+      )}
     </div>
   );
 }

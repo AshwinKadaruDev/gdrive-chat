@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -22,6 +23,8 @@ from app.schemas.chat import (
     ChatSessionResponse,
     MessageResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -116,10 +119,15 @@ async def chat(
     """
 
     is_drive = body.agent_type.lower() == "drive"
+    logger.info(
+        "[CHAT] New message: agent_type=%s, session_id=%s, folder_id=%s, msg=%r",
+        body.agent_type, body.session_id, body.gdrive_folder_id, body.message[:80],
+    )
 
     # Resolve or create the chat session ------------------------------------
     if body.session_id is not None:
         session = await _verify_session_access(body.session_id, user, db)
+        logger.info("[CHAT] Using existing session %s", session.id)
     else:
         if is_drive:
             # Drive Chat — requires gdrive_folder_id
@@ -155,6 +163,7 @@ async def chat(
             )
         db.add(session)
         await db.flush()
+        logger.info("[CHAT] Created new session %s (type=%s)", session.id, session.agent_type)
 
     # Persist the user message ----------------------------------------------
     user_message = Message(
@@ -256,13 +265,16 @@ async def chat(
             if agent_result.citations
             else None
         )
-    except Exception:
-        # Agent service is not configured or failed – return a helpful
-        # placeholder so the rest of the app keeps working.
+    except Exception as exc:
+        logger.error(
+            "[CHAT] Agent failed for session %s: %s: %s",
+            session.id, type(exc).__name__, exc,
+            exc_info=True,
+        )
         answer_text = (
-            "The AI agent is not configured yet. "
-            "Please make sure the FolderAgent service and its dependencies "
-            "(Azure AI Search index, LLM API key) are properly set up."
+            "The AI agent encountered an error. "
+            "Please check the server logs for details. "
+            f"Error: {type(exc).__name__}: {exc}"
         )
         citations = None
 
@@ -306,10 +318,15 @@ async def chat_stream(
     and the final answer tokens are streamed to the client.
     """
     is_drive = body.agent_type.lower() == "drive"
+    logger.info(
+        "[CHAT-STREAM] New streaming message: agent_type=%s, session_id=%s, folder_id=%s, msg=%r",
+        body.agent_type, body.session_id, body.gdrive_folder_id, body.message[:80],
+    )
 
     # Resolve or create the chat session
     if body.session_id is not None:
         session = await _verify_session_access(body.session_id, user, db)
+        logger.info("[CHAT-STREAM] Using existing session %s", session.id)
     else:
         if is_drive:
             if not body.gdrive_folder_id:
@@ -400,6 +417,7 @@ async def chat_stream(
             drive_service = GoogleDriveService()
 
             if is_drive or session_agent_type == AgentType.DRIVE:
+                logger.info("[CHAT-STREAM] Setting up DRIVE agent, folder_id=%s", session_gdrive_folder_id)
                 agent = FolderAgent(
                     llm_client=llm_client,
                     drive_service=drive_service,
@@ -408,6 +426,7 @@ async def chat_stream(
                 )
                 folder_id = session_gdrive_folder_id or body.gdrive_folder_id or ""
             else:
+                logger.info("[CHAT-STREAM] Setting up RAG agent, project_id=%s", session_project_id)
                 search_service = AzureSearchService(
                     endpoint=settings.AZURE_SEARCH_ENDPOINT,
                     api_key=settings.AZURE_SEARCH_API_KEY,
@@ -427,6 +446,7 @@ async def chat_stream(
             user_access_token = decrypt_token(
                 user.google_access_token, settings
             )
+            logger.info("[CHAT-STREAM] Starting agent.answer_streaming, folder_id=%s", folder_id)
 
             async for event_type, data in agent.answer_streaming(
                 question=body.message,
@@ -446,10 +466,14 @@ async def chat_stream(
                     yield f"event: done\ndata: {json.dumps({})}\n\n"
 
         except Exception as exc:
+            logger.error(
+                "[CHAT-STREAM] Agent failed for session %s: %s: %s",
+                session_id, type(exc).__name__, exc,
+                exc_info=True,
+            )
             error_text = (
-                "The AI agent is not configured yet. "
-                "Please make sure the FolderAgent service and its dependencies "
-                "(Azure AI Search index, LLM API key) are properly set up."
+                "The AI agent encountered an error. "
+                f"Error: {type(exc).__name__}: {exc}"
             )
             full_answer.append(error_text)
             yield f"event: delta\ndata: {json.dumps({'text': error_text})}\n\n"

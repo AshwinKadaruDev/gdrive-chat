@@ -1,7 +1,18 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
+
+# Configure logging for the app — without this, logger.info() calls in
+# routers/services are silently discarded (only Uvicorn access logs show).
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+# Quiet down noisy third-party loggers
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles

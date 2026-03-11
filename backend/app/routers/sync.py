@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -13,7 +15,10 @@ from app.dependencies import get_current_user, get_db, get_settings
 from app.models.project import Project, ProjectStatus
 from app.models.user import User
 from app.schemas.project import ProjectResponse
+from app.services.google_drive import GoogleDriveService
 from app.utils.security import decrypt_token
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -61,9 +66,19 @@ async def trigger_sync(
     3. If Temporal is unavailable, fall back to an inline placeholder that
        keeps the app functional during development.
     """
+    logger.info(
+        "[SYNC] trigger_sync called for project_id=%s by user=%s",
+        project_id, user.id,
+    )
+
     project = await _get_user_project(project_id, user, db)
+    logger.info(
+        "[SYNC] Project found: name=%s, folder_id=%s, current_status=%s",
+        project.name, project.gdrive_folder_id, project.sync_status,
+    )
 
     if project.sync_status == ProjectStatus.SYNCING:
+        logger.warning("[SYNC] Sync already in progress for project %s", project_id)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A sync is already in progress for this project",
@@ -73,45 +88,39 @@ async def trigger_sync(
     project.sync_status = ProjectStatus.SYNCING
     project.sync_error = None
     await db.flush()
+    logger.info("[SYNC] Marked project %s as SYNCING", project_id)
 
-    # Attempt to start the Temporal workflow --------------------------------
+    # Count files via Google Drive API (lightweight, no Temporal needed) -----
     try:
-        from temporalio.client import Client as TemporalClient
-
-        temporal_client = await TemporalClient.connect(
-            settings.TEMPORAL_HOST,
-            namespace=settings.TEMPORAL_NAMESPACE,
-        )
-
-        # Decrypt tokens for the worker to use with Google Drive API
         user_access_token = decrypt_token(user.google_access_token, settings)
-        user_refresh_token = (
-            decrypt_token(user.google_refresh_token, settings)
-            if user.google_refresh_token
-            else ""
-        )
+        logger.info("[SYNC] Token decrypted (length=%d), counting files...", len(user_access_token))
 
-        await temporal_client.start_workflow(
-            "SyncFolderWorkflow",
-            {
-                "project_id": str(project_id),
-                "folder_id": project.gdrive_folder_id,
-                "user_access_token": user_access_token,
-                "user_refresh_token": user_refresh_token,
-            },
-            id=f"sync-{project_id}",
-            task_queue="talk-to-folder-sync",
+        drive_service = GoogleDriveService()
+        file_count = await drive_service.count_files(
+            project.gdrive_folder_id, user_access_token
         )
-    except Exception:
-        # Temporal is not running or not configured.  In a development
-        # environment we fall back to an inline placeholder so the API
-        # surface remains functional.
-        #
-        # A real inline sync could be performed here by calling
-        # GoogleDriveService + AzureSearchService directly, but we keep
-        # things simple for now and just mark the project as COMPLETED.
+        logger.info("[SYNC] Counted %d files in folder %s", file_count, project.gdrive_folder_id)
+
+        project.files_total = file_count
+        project.files_processed = file_count
         project.sync_status = ProjectStatus.COMPLETED
+        project.last_synced_at = datetime.now(timezone.utc)
+        project.sync_error = None
         await db.flush()
+        logger.info(
+            "[SYNC] Project %s synced: files_total=%d, status=COMPLETED",
+            project_id, file_count,
+        )
+    except Exception as exc:
+        logger.error(
+            "[SYNC] FAILED to count files for project %s: %s: %s",
+            project_id, type(exc).__name__, exc,
+            exc_info=True,
+        )
+        project.sync_status = ProjectStatus.FAILED
+        project.sync_error = str(exc)
+        await db.flush()
+        logger.warning("[SYNC] Marked project %s as FAILED", project_id)
 
     return project
 
@@ -129,4 +138,8 @@ async def get_sync_status(
     # Refresh from the DB so we get the latest status (e.g. if Temporal
     # workers have updated it in the background).
     project = await _get_user_project(project_id, user, db)
+    logger.info(
+        "[SYNC-STATUS] project=%s status=%s files=%d/%d",
+        project_id, project.sync_status, project.files_processed, project.files_total,
+    )
     return project

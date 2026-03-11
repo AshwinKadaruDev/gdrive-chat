@@ -20,13 +20,13 @@ vi.mock("@/hooks/useProjects", () => ({
   }),
 }));
 
-function renderModal(onClose = vi.fn()) {
+function renderModal(onClose = vi.fn(), onCreated?: (project: unknown) => void) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <AddFolderModal onClose={onClose} />
+      <AddFolderModal onClose={onClose} onCreated={onCreated} />
     </QueryClientProvider>
   );
 }
@@ -132,6 +132,36 @@ describe("AddFolderModal", () => {
         gdrive_folder_url: VALID_URL,
         name: "My Folder",
       });
+    });
+  });
+
+  it("calls onCreated with new project on successful creation", async () => {
+    mockValidateMutate.mockImplementation((_url: string, opts: Record<string, Function>) => {
+      opts.onSuccess({ folder_name: "My Folder", folder_id: "abc", gdrive_folder_url: VALID_URL });
+    });
+    const project = { id: "proj-1", name: "My Folder" };
+    mockCreateMutateAsync.mockResolvedValue(project);
+
+    const onClose = vi.fn();
+    const onCreated = vi.fn();
+    renderModal(onClose, onCreated);
+
+    const input = screen.getByLabelText(/paste a google drive folder url/i);
+    fireEvent.change(input, { target: { value: VALID_URL } });
+    vi.advanceTimersByTime(700);
+
+    await waitFor(() => {
+      expect(screen.getByText("My Folder")).toBeInTheDocument();
+    });
+
+    vi.useRealTimers();
+
+    const btn = screen.getByRole("button", { name: /add folder/i });
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(onCreated).toHaveBeenCalledWith(project);
+      expect(onClose).toHaveBeenCalled();
     });
   });
 

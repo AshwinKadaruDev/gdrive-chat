@@ -90,7 +90,7 @@ const markdownComponents = {
     <li className="leading-relaxed">{children}</li>
   ),
   strong: ({ children }: { children?: React.ReactNode }) => (
-    <strong className="font-semibold text-white">{children}</strong>
+    <strong className="font-semibold text-fg-primary">{children}</strong>
   ),
   code: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
     const isBlock = className?.startsWith("language-");
@@ -121,12 +121,12 @@ const markdownComponents = {
     </div>
   ),
   th: ({ children }: { children?: React.ReactNode }) => (
-    <th className="border border-white/[0.08] bg-surface-800 px-3 py-1.5 text-left text-xs font-semibold">
+    <th className="border border-[var(--border-subtle)] bg-surface-800 px-3 py-1.5 text-left text-xs font-semibold">
       {children}
     </th>
   ),
   td: ({ children }: { children?: React.ReactNode }) => (
-    <td className="border border-white/[0.08] px-3 py-1.5 text-xs">{children}</td>
+    <td className="border border-[var(--border-subtle)] px-3 py-1.5 text-xs">{children}</td>
   ),
 };
 
@@ -144,8 +144,8 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
   if (isUser) {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[70%] rounded-lg border border-white/[0.08] bg-surface-850 px-4 py-3">
-          <div className="whitespace-pre-wrap text-[15px] leading-relaxed text-white">
+        <div className="max-w-[70%] rounded-lg border border-[var(--border-subtle)] bg-surface-850 px-4 py-3">
+          <div className="whitespace-pre-wrap text-[15px] leading-relaxed text-fg-primary">
             {renderedContent}
           </div>
           <p className="mt-1 text-right text-[10px] text-surface-100/50">
@@ -171,7 +171,7 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
 
         {/* Citation sources footer */}
         {message.citations && message.citations.length > 0 && (
-          <div className="mt-3 border-t border-white/[0.08] pt-2">
+          <div className="mt-3 border-t border-[var(--border-subtle)] pt-2">
             <p className="text-xs font-medium text-surface-100">
               Sources ({message.citations.length})
             </p>

@@ -5,7 +5,7 @@ export default function LandingPage() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-surface-950 px-4">
       {/* Login card */}
-      <div className="w-full max-w-md border border-white/15 bg-surface-800 px-10 pb-10 pt-12 shadow-[0_0_80px_rgba(255,229,1,0.03)]">
+      <div className="w-full max-w-md border border-[var(--border-subtle)] bg-surface-800 px-10 pb-10 pt-12 shadow-[0_0_80px_rgba(255,229,1,0.03)]">
         {/* Brand */}
         <div className="flex justify-center">
           <TenexLogo iconSize={36} />
