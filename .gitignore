@@ -16,6 +16,7 @@ venv/
 .env
 .env.local
 .env.*.local
+.env.deploy
 
 # Node / Frontend
 node_modules/

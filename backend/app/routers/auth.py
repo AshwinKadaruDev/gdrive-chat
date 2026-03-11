@@ -159,14 +159,14 @@ async def google_callback(
 
     response = Response(
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-        headers={"Location": "http://localhost:5173"},
+        headers={"Location": settings.FRONTEND_URL},
     )
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_id,
         httponly=True,
         samesite="lax",
-        secure=False,  # Set True in production behind HTTPS
+        secure=settings.FRONTEND_URL.startswith("https"),
         max_age=SESSION_MAX_AGE,
         path="/",
     )

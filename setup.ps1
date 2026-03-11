@@ -190,18 +190,6 @@ if ($envContent -match "ENCRYPTION_KEY=your-fernet-key" -or $envContent -notmatc
     }
 }
 
-# Generate SESSION_SECRET if placeholder or missing
-if ($envContent -match "SESSION_SECRET=your-random-secret" -or $envContent -notmatch "SESSION_SECRET=.+") {
-    Write-Host "  Generating SESSION_SECRET..." -ForegroundColor Yellow
-    $sessionSecret = & $PythonExe -c "import secrets; print(secrets.token_urlsafe(32))" 2>$null
-    if ($sessionSecret) {
-        $envContent = $envContent -replace "SESSION_SECRET=.*", "SESSION_SECRET=$sessionSecret"
-        Write-Host "  SESSION_SECRET generated." -ForegroundColor Green
-    } else {
-        Write-Host "  WARNING: Could not generate session secret." -ForegroundColor Yellow
-    }
-}
-
 # Write back updated .env
 if ($envContent) {
     Set-Content -Path $EnvFile -Value $envContent -NoNewline

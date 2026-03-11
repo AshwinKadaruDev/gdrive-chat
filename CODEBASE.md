@@ -102,12 +102,13 @@ tenex/
 ├── worker/
 │   ├── main.py                       # Temporal worker entrypoint (retry connect, 15 attempts)
 │   ├── activities/
-│   │   ├── crawl_folder.py          # Recursive Drive listing via httpx
-│   │   ├── extract_content.py       # MIME-dispatch: PDF/DOCX/XLSX/Sheets/OCR
+│   │   ├── crawl_folder.py          # Recursive Drive listing via httpx (401 → non-retryable)
+│   │   ├── extract_content.py       # MIME-dispatch: PDF/DOCX/XLSX/Sheets/OCR (401 → non-retryable)
 │   │   ├── chunk_content.py         # Heading → paragraph → fixed-window splitting
 │   │   ├── generate_embeddings.py   # OpenAI ada-002, batch 20, rate-limit retry
 │   │   ├── generate_questions.py    # LLM-generated RAG questions + embedding
-│   │   └── index_chunks.py         # Azure Search batch upsert (100/batch)
+│   │   ├── index_chunks.py         # Azure Search batch upsert (100/batch)
+│   │   └── refresh_token.py        # Google OAuth token refresh (env-var credentials)
 │   ├── workflows/
 │   │   └── sync_folder.py          # SyncFolderWorkflow orchestrator
 │   └── requirements.txt
@@ -173,7 +174,7 @@ User → React SPA (Vite :5173) → FastAPI API (:8000) ──→ PostgreSQL (us
                                      ├──→ Google OAuth 2.0 (login, token refresh)
                                      ├──→ FolderAgent (ReAct loop) ──→ Azure AI Search (hybrid query)
                                      │                               ──→ Google Drive (file read)
-                                     │                               ──→ Claude / GPT-4o (reasoning)
+                                     │                               ──→ GPT-5.2 (reasoning)
                                      │
                                      └──→ Temporal (start sync workflow)
                                               │
@@ -185,7 +186,7 @@ User → React SPA (Vite :5173) → FastAPI API (:8000) ──→ PostgreSQL (us
 
 ### CORS
 
-`main.py` allows origins `http://localhost:5173` (frontend dev) and `http://localhost:8000`, with `allow_credentials=True`, all methods and headers.
+`main.py` derives allowed origins from `FRONTEND_URL` and `GOOGLE_REDIRECT_URI` (backend origin), with `allow_credentials=True`, all methods and headers.
 
 ### Router Mounts
 
@@ -252,8 +253,8 @@ Project creation extracts folder ID from URL via regex: `drive.google.com/drive/
 4. Backend exchanges code for tokens, fetches user profile, upserts User row
 5. Tokens encrypted with Fernet before DB storage (both access + refresh)
 6. Backend creates in-memory session mapping (`session_id → user_id`)
-7. Sets HTTPOnly cookie: `session_id`, `samesite=lax`, `secure=False`, `max_age=7 days`, `path=/`
-8. Redirects to `http://localhost:5173`
+7. Sets HTTPOnly cookie: `session_id`, `samesite=lax`, `secure` derived from `FRONTEND_URL` scheme, `max_age=7 days`, `path=/`
+8. Redirects to `FRONTEND_URL` (default: `http://localhost:5173`)
 
 OAuth params: `access_type=offline` (requests refresh token), `prompt=consent` (forces consent every time).
 
@@ -368,7 +369,7 @@ Index: `talk-to-folder-chunks` (configurable via `AZURE_SEARCH_INDEX_NAME`)
 
 ReAct loop that answers questions by iteratively calling tools and reasoning.
 
-**Constructor args**: `llm_client`, `drive_service`, `search_service` (optional), `embeddings_service` (optional), `model` (default: `claude-sonnet-4-5-20250929`), `max_iterations` (default: 15), `tools` (optional, defaults to `ALL_TOOL_DEFINITIONS`), `system_prompt` (optional, defaults to `SYSTEM_PROMPT`).
+**Constructor args**: `llm_client`, `drive_service`, `search_service` (optional), `embeddings_service` (optional), `model` (default: `gpt-5.2`), `max_iterations` (default: 15), `tools` (optional, defaults to `ALL_TOOL_DEFINITIONS`), `system_prompt` (optional, defaults to `SYSTEM_PROMPT`).
 
 **`answer()` method**:
 1. Builds messages: `[self.system_prompt, ...chat_history, user_question]`
@@ -442,9 +443,9 @@ All defined in OpenAI function calling schema format (converted to Anthropic for
 `LLMClient` normalizes Anthropic and OpenAI to a common response format.
 
 **Provider selection**:
-- If model string contains `"claude"` and `ANTHROPIC_API_KEY` is set → use Anthropic
-- Otherwise → use OpenAI (falls back to `gpt-4o` if model was a Claude model)
-- `complete()` method (no tools): prefers Anthropic (`claude-sonnet-4-5-20250929`), falls back to `gpt-4o-mini`
+- Anthropic support is currently disabled (TODO: re-enable)
+- All requests route to OpenAI (gpt-5.2 for agent, gpt-4o-mini for simple completion)
+- Claude model names are remapped to gpt-5.2 in `_call_openai` as a safety fallback
 
 **Normalized response structure** (dataclasses):
 ```
@@ -519,14 +520,15 @@ All activities are `@activity.defn` async functions. No dependency injection —
 
 | Step | Activity | Timeout | Retries | Notes |
 |------|----------|---------|---------|-------|
-| 1 | `crawl_folder` | 10 min | 3 | Recursive Drive listing, pagination (pageSize: 1000) |
-| 2a | `extract_content` | 5 min | 2 | Per file. MIME dispatch: Google Docs/Sheets/Slides export, PDF/DOCX/XLSX binary extraction, text/CSV/MD direct download, images → placeholder |
+| 0 | `refresh_google_token` | 30s | 1 | Proactive token refresh before pipeline starts (handles stale-token-on-replay) |
+| 1 | `crawl_folder` | 10 min | 1 | Recursive Drive listing. 401 → non-retryable `TOKEN_EXPIRED` |
+| 2a | `extract_content` | 5 min | 1 | Per file. 401 → refresh once → retry. If still fails → abort pipeline |
 | 2b | `chunk_content` | 2 min | 2 | Per file. See chunking strategy below |
 | 2c | `generate_embeddings` | 10 min | 3 | Per file. OpenAI ada-002, batch 20, 0.5s inter-batch delay |
 | 2d | `generate_questions` | 10 min | 2 | Per file. 3-5 questions via Claude Sonnet or GPT-4o-mini fallback, then embed |
 | 3 | `index_chunks` | 5 min | 3 | All files batched. 500 chunks per Temporal payload, 100 per Azure Search upload |
 
-Failed files are logged and skipped — processing continues with remaining files.
+Failed files are logged and skipped — processing continues with remaining files. Auth failures (401) abort the entire pipeline and mark the project FAILED with a user-facing error message.
 
 **Return value**: `{project_id, folder_id, total_files, processed_files, failed_files, indexed_chunks}`
 
@@ -540,7 +542,7 @@ Failed files are logged and skipped — processing continues with remaining file
 ### Embedding & Questions
 
 - **Embeddings** (`generate_embeddings.py`): OpenAI ada-002. Batch size 20. Text truncated to 32k chars. 0.5s inter-batch delay. Rate-limit retry: waits 10s, max 5 retries. Adds `content_vector` (1536-dim) to each chunk.
-- **Questions** (`generate_questions.py`): Prefers Claude Sonnet (`claude-sonnet-4-20250514`) if `ANTHROPIC_API_KEY` set, falls back to GPT-4o-mini. Generates 3-5 hypothetical questions per chunk (text truncated to 6000 chars, temp 0.7, max 500 tokens). Strips numbering, validates question marks. Concatenated questions embedded with ada-002 (32k char truncation). Batch size 5, 1.0s delay. Empty questions/vectors on error. Adds `questions` (list[str]) + `questions_vector` (1536-dim).
+- **Questions** (`generate_questions.py`): Uses GPT-4o-mini (Anthropic path disabled). Generates 3-5 hypothetical questions per chunk (text truncated to 6000 chars, temp 0.7, max 500 tokens). Strips numbering, validates question marks. Concatenated questions embedded with ada-002 (32k char truncation). Batch size 5, 1.0s delay. Empty questions/vectors on error. Adds `questions` (list[str]) + `questions_vector` (1536-dim).
 
 ---
 
@@ -642,12 +644,12 @@ Dark/light theme via CSS variables + `darkMode: "class"`. Tailwind 3.4 with cust
 | `AZURE_SEARCH_API_KEY` | Yes | API, Worker | Azure AI Search admin key |
 | `AZURE_SEARCH_INDEX_NAME` | Yes | API, Worker | Index name (default: `talk-to-folder-chunks`) |
 | `OPENAI_API_KEY` | Yes | API, Worker | OpenAI key (embeddings + fallback LLM) |
-| `ANTHROPIC_API_KEY` | No | API, Worker | Anthropic key (primary LLM if set) |
+| `ANTHROPIC_API_KEY` | No | API, Worker | Unused — reserved for future re-enablement |
 | `TEMPORAL_HOST` | No | API, Worker | Temporal gRPC address (default: `localhost:7233`) |
 | `TEMPORAL_NAMESPACE` | No | API, Worker | Temporal namespace (default: `default`) |
 | `TEMPORAL_API_KEY` | No | Worker | Temporal Cloud API key (enables TLS) |
 | `ENCRYPTION_KEY` | Yes | API | Fernet key for token encryption at rest |
-| `SESSION_SECRET` | Yes | API | Secret for session management |
+| `FRONTEND_URL` | No | API | Frontend origin for OAuth redirect + cookie security (default: `http://localhost:5173`) |
 | `AZURE_STORAGE_CONNECTION_STRING` | No | API | Azure Blob Storage (optional, unused currently) |
 
 ---
@@ -685,9 +687,7 @@ Health check: `db` uses `pg_isready`. `app` and `worker` depend on `db` (healthy
 ## Known Limitations
 
 - **In-memory sessions**: `utils/security.py` stores sessions in a Python dict. Restarts lose all sessions. Multi-worker deploys need Redis or similar.
-- **No automatic token refresh**: Google access tokens expire (~1 hour) but there's no background refresh logic. Users need to re-login when tokens expire.
-- **Cookie `secure=False`**: Set in `routers/auth.py` line 168. Must change to `True` for production HTTPS.
-- **Hardcoded redirect URLs**: OAuth callback redirects to `http://localhost:5173`. Needs to be configurable for production.
+- **Token refresh is proactive, not background**: `get_valid_access_token()` in `utils/security.py` checks `token_expires_at` and refreshes via Google's token endpoint before making Drive calls. Covers API endpoints and the sync workflow. However, there is no background cron/task that refreshes tokens ahead of time — refresh only happens when a Drive call is about to be made.
 - **`google_auth.py` service unused**: The OAuth helper service exists but all auth logic lives directly in `routers/auth.py`.
 - **No CI/CD pipeline**: No GitHub Actions, GitLab CI, or similar configured.
 - **Sequential file processing**: Worker processes files one at a time (not parallel). Large folders will be slow.

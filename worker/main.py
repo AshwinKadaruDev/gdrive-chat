@@ -9,7 +9,10 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 # Ensure the project root is on sys.path so worker.* imports work
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _project_root)
+# Also add backend/ so that `from app.models...` imports work (used by update_project)
+sys.path.insert(0, os.path.join(_project_root, "backend"))
 
 from worker.activities.crawl_folder import crawl_folder
 from worker.activities.extract_content import extract_content
@@ -18,6 +21,7 @@ from worker.activities.generate_embeddings import generate_embeddings
 from worker.activities.generate_questions import generate_questions
 from worker.activities.index_chunks import index_chunks
 from worker.activities.update_project import update_project
+from worker.activities.refresh_token import refresh_google_token
 from worker.workflows.sync_folder import SyncFolderWorkflow
 
 TASK_QUEUE = "talk-to-folder-sync"
@@ -60,6 +64,7 @@ async def run_worker() -> None:
             generate_questions,
             index_chunks,
             update_project,
+            refresh_google_token,
         ],
     )
 

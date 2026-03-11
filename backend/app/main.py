@@ -68,10 +68,20 @@ class AuthGuardMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(AuthGuardMiddleware)
 
-# CORS middleware
+# CORS middleware — derive allowed origins from config
+from app.dependencies import get_settings as _get_settings
+from urllib.parse import urlunparse, urlparse
+
+_settings = _get_settings()
+_cors_origins = [_settings.FRONTEND_URL]
+_backend_parsed = urlparse(_settings.GOOGLE_REDIRECT_URI)
+_backend_origin = urlunparse((_backend_parsed.scheme, _backend_parsed.netloc, "", "", "", ""))
+if _backend_origin not in _cors_origins:
+    _cors_origins.append(_backend_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:8000"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

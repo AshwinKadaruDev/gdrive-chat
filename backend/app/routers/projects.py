@@ -21,7 +21,7 @@ from app.schemas.project import (
     ProjectResponse,
 )
 from app.services.google_drive import DriveValidationError, GoogleDriveService
-from app.utils.security import decrypt_token
+from app.utils.security import get_valid_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,7 @@ async def _get_user_project(
 async def validate_folder(
     body: FolderValidateRequest,
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
     """Validate that a Google Drive URL points to an accessible folder."""
@@ -93,7 +94,7 @@ async def validate_folder(
             headers={"X-Error-Code": "invalid_url"},
         )
 
-    access_token = decrypt_token(user.google_access_token, settings)
+    access_token = await get_valid_access_token(user, settings, db)
     try:
         metadata = await GoogleDriveService().validate_folder(
             folder_id, access_token
@@ -168,10 +169,10 @@ async def create_project(
         )
 
     # Auto-fetch folder name from Drive if not provided
+    access_token = await get_valid_access_token(user, settings, db)
     name = body.name
     if not name:
         try:
-            access_token = decrypt_token(user.google_access_token, settings)
             metadata = await GoogleDriveService().validate_folder(
                 folder_id, access_token
             )
@@ -182,11 +183,10 @@ async def create_project(
     # Count files so the card shows the correct total immediately
     files_total = 0
     try:
-        access_token = decrypt_token(user.google_access_token, settings)
         files_total = await GoogleDriveService().count_files(folder_id, access_token)
         logger.info("[PROJECT] Counted %d files in folder %s", files_total, folder_id)
     except Exception as exc:
-        logger.warning("[PROJECT] Could not count files for %s: %s", folder_id, exc)
+        logger.warning("[PROJECT] Could not count files for %s: %s: %s", folder_id, type(exc).__name__, exc)
 
     project = Project(
         user_id=user.id,

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import httpx
@@ -32,7 +33,8 @@ class GoogleDriveService:
         """
         logger.info("[DRIVE] list_folder called for folder_id=%s", folder_id)
         all_files: list[dict] = []
-        await self._list_folder_recursive(folder_id, access_token, all_files)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            await self._list_folder_recursive(folder_id, access_token, all_files, client)
         file_count = sum(
             1 for f in all_files
             if f.get("mimeType") != "application/vnd.google-apps.folder"
@@ -58,6 +60,7 @@ class GoogleDriveService:
         folder_id: str,
         access_token: str,
         accumulator: list[dict],
+        client: httpx.AsyncClient,
     ) -> None:
         """Recursively traverse a folder and its sub-folders."""
         headers = {"Authorization": f"Bearer {access_token}"}
@@ -72,31 +75,34 @@ class GoogleDriveService:
             if page_token:
                 params["pageToken"] = page_token
 
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.BASE_URL}/files",
-                    headers=headers,
-                    params=params,
-                )
-                logger.info(
-                    "[DRIVE] API list folder_id=%s → status=%d, items=%s",
-                    folder_id, response.status_code,
-                    len(response.json().get("files", [])) if response.status_code == 200 else "N/A",
-                )
-                if response.status_code != 200:
-                    logger.error("[DRIVE] API error: %s", response.text[:500])
-                response.raise_for_status()
-                data = response.json()
+            response = await client.get(
+                f"{self.BASE_URL}/files",
+                headers=headers,
+                params=params,
+            )
+            logger.info(
+                "[DRIVE] API list folder_id=%s → status=%d, items=%s",
+                folder_id, response.status_code,
+                len(response.json().get("files", [])) if response.status_code == 200 else "N/A",
+            )
+            if response.status_code != 200:
+                logger.error("[DRIVE] API error: %s", response.text[:500])
+            response.raise_for_status()
+            data = response.json()
 
             files = data.get("files", [])
+            subfolders = []
             for file in files:
                 accumulator.append(file)
-                # If the file is a folder, recurse into it
                 if file.get("mimeType") == "application/vnd.google-apps.folder":
                     logger.info("[DRIVE] Recursing into subfolder: %s (id=%s)", file["name"], file["id"])
-                    await self._list_folder_recursive(
-                        file["id"], access_token, accumulator
-                    )
+                    subfolders.append(file["id"])
+
+            if subfolders:
+                await asyncio.gather(*(
+                    self._list_folder_recursive(sf_id, access_token, accumulator, client)
+                    for sf_id in subfolders
+                ))
 
             page_token = data.get("nextPageToken")
             if not page_token:
@@ -108,7 +114,7 @@ class GoogleDriveService:
         url = f"{self.BASE_URL}/files/{file_id}"
         params = {"alt": "media"}
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(url, headers=headers, params=params)
             response.raise_for_status()
             return response.content
@@ -118,16 +124,21 @@ class GoogleDriveService:
         file_id: str,
         access_token: str,
         mime_type: str = "text/plain",
-    ) -> str:
-        """Export a Google Docs/Sheets/Slides file to the specified MIME type."""
+        as_bytes: bool = False,
+    ) -> str | bytes:
+        """Export a Google Docs/Sheets/Slides file to the specified MIME type.
+
+        When *as_bytes* is True the raw response bytes are returned (needed
+        for binary formats like xlsx).  Otherwise the decoded text is returned.
+        """
         headers = {"Authorization": f"Bearer {access_token}"}
         url = f"{self.BASE_URL}/files/{file_id}/export"
         params = {"mimeType": mime_type}
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(url, headers=headers, params=params)
             response.raise_for_status()
-            return response.text
+            return response.content if as_bytes else response.text
 
     async def search_files(
         self,
@@ -138,60 +149,84 @@ class GoogleDriveService:
         max_results: int = 20,
     ) -> list[dict]:
         """
-        Search for files in a Drive folder using fullText contains.
+        Search for files in a Drive folder **recursively** using fullText contains.
 
-        Returns a list of file metadata dicts matching the query.
+        Collects all subfolder IDs via list_folder, then builds an OR clause
+        across all parent IDs so files in nested subfolders are found.
         """
         logger.info("[DRIVE] search_files: folder=%s query=%r file_types=%s", folder_id, query, file_types)
         headers = {"Authorization": f"Bearer {access_token}"}
 
-        # Build the query: scoped to folder, full-text search, not trashed
-        # Escape single quotes in query
-        escaped_query = query.replace("\\", "\\\\").replace("'", "\\'")
-        q_parts = [
-            f"'{folder_id}' in parents",
-            f"fullText contains '{escaped_query}'",
-            "trashed = false",
+        # Collect all folder IDs (root + subfolders) for recursive search
+        all_items = await self.list_folder(folder_id, access_token)
+        folder_ids = [folder_id] + [
+            f["id"] for f in all_items
+            if f.get("mimeType") == "application/vnd.google-apps.folder"
         ]
+        logger.info("[DRIVE] search_files: searching across %d folders", len(folder_ids))
 
-        # Optional MIME type filtering
-        if file_types:
-            mime_clauses = [
-                f"mimeType contains '{ft}'" for ft in file_types
-            ]
-            q_parts.append(f"({' or '.join(mime_clauses)})")
+        escaped_query = query.replace("\\", "\\\\").replace("'", "\\'")
 
-        q = " and ".join(q_parts)
-
+        # Google Drive API has query length limits; batch into groups of 30
         all_files: list[dict] = []
-        page_token: str | None = None
+        seen_ids: set[str] = set()
+        batch_size = 30
 
-        while len(all_files) < max_results:
-            params: dict[str, str | int] = {
-                "q": q,
-                "fields": f"nextPageToken,{self.FIELDS}",
-                "pageSize": str(min(max_results - len(all_files), 100)),
-            }
-            if page_token:
-                params["pageToken"] = page_token
-
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.BASE_URL}/files",
-                    headers=headers,
-                    params=params,
-                )
-                if response.status_code != 200:
-                    logger.error("[DRIVE] search_files API error: status=%d body=%s", response.status_code, response.text[:500])
-                response.raise_for_status()
-                data = response.json()
-
-            batch = data.get("files", [])
-            logger.info("[DRIVE] search_files: got %d results in this page", len(batch))
-            all_files.extend(batch)
-            page_token = data.get("nextPageToken")
-            if not page_token:
+        for batch_start in range(0, len(folder_ids), batch_size):
+            if len(all_files) >= max_results:
                 break
+
+            batch_folders = folder_ids[batch_start : batch_start + batch_size]
+            parents_clause = " or ".join(
+                f"'{fid}' in parents" for fid in batch_folders
+            )
+
+            q_parts = [
+                f"({parents_clause})",
+                f"fullText contains '{escaped_query}'",
+                "trashed = false",
+            ]
+
+            if file_types:
+                mime_clauses = [
+                    f"mimeType contains '{ft}'" for ft in file_types
+                ]
+                q_parts.append(f"({' or '.join(mime_clauses)})")
+
+            q = " and ".join(q_parts)
+
+            page_token: str | None = None
+            while len(all_files) < max_results:
+                params: dict[str, str | int] = {
+                    "q": q,
+                    "fields": f"nextPageToken,{self.FIELDS}",
+                    "pageSize": str(min(max_results - len(all_files), 100)),
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        f"{self.BASE_URL}/files",
+                        headers=headers,
+                        params=params,
+                    )
+                    if response.status_code != 200:
+                        logger.error("[DRIVE] search_files API error: status=%d body=%s", response.status_code, response.text[:500])
+                    response.raise_for_status()
+                    data = response.json()
+
+                batch = data.get("files", [])
+                logger.info("[DRIVE] search_files: got %d results in this page", len(batch))
+                for f in batch:
+                    fid = f.get("id", "")
+                    if fid not in seen_ids:
+                        seen_ids.add(fid)
+                        all_files.append(f)
+
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
 
         logger.info("[DRIVE] search_files: returning %d results total", min(len(all_files), max_results))
         return all_files[:max_results]

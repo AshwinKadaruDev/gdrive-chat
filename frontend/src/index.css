@@ -16,25 +16,25 @@
     --color-cream: 240 238 229;
     --fg-primary: #FFFFFF;
     --fg-inverted: #000000;
-    --border-subtle: rgba(255, 255, 255, 0.08);
+    --border-subtle: rgba(255, 255, 255, 0.10);
     --hover-overlay: rgba(255, 255, 255, 0.04);
   }
 
   /* Light theme */
   html:not(.dark) {
     --surface-950: 255 255 255;
-    --surface-900: 250 250 250;
-    --surface-850: 255 255 255;
-    --surface-800: 245 245 245;
-    --surface-700: 229 229 229;
-    --surface-100: 107 114 128;
-    --surface-50: 55 65 81;
-    --brand-500: 234 210 0;
-    --color-cream: 23 23 23;
-    --fg-primary: #000000;
+    --surface-900: 252 252 253;
+    --surface-850: 249 249 250;
+    --surface-800: 255 255 255;
+    --surface-700: 228 228 231;
+    --surface-100: 113 113 122;
+    --surface-50: 63 63 70;
+    --brand-500: 161 121 0;
+    --color-cream: 39 39 42;
+    --fg-primary: #09090B;
     --fg-inverted: #FFFFFF;
-    --border-subtle: rgba(0, 0, 0, 0.1);
-    --hover-overlay: rgba(0, 0, 0, 0.04);
+    --border-subtle: rgba(0, 0, 0, 0.12);
+    --hover-overlay: rgba(0, 0, 0, 0.03);
   }
 
   html {

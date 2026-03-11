@@ -108,6 +108,10 @@ export async function getMessages(sessionId: string): Promise<Message[]> {
   return data;
 }
 
+export async function deleteChatSession(sessionId: string): Promise<void> {
+  await api.delete(`/api/chat/sessions/${sessionId}`);
+}
+
 export async function sendMessage(
   projectId: string,
   message: string,

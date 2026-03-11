@@ -8,6 +8,7 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from worker.activities.crawl_folder import crawl_folder
@@ -17,8 +18,23 @@ with workflow.unsafe.imports_passed_through():
     from worker.activities.generate_questions import generate_questions
     from worker.activities.index_chunks import index_chunks
     from worker.activities.update_project import update_project
+    from worker.activities.refresh_token import refresh_google_token
 
 logger = logging.getLogger(__name__)
+
+# Retry policy for activities that don't hit external auth (chunking, embedding, etc.)
+_DEFAULT_RETRY = RetryPolicy(maximum_attempts=3)
+
+# No retries for auth-dependent activities — they raise non-retryable on 401
+_AUTH_RETRY = RetryPolicy(maximum_attempts=1)
+
+
+def _is_token_expired(error: ActivityError) -> bool:
+    """Check whether an ActivityError was caused by an expired Google token."""
+    return (
+        isinstance(error.cause, ApplicationError)
+        and error.cause.type == "TOKEN_EXPIRED"
+    )
 
 
 @dataclass
@@ -43,12 +59,25 @@ class SyncFolderWorkflow:
             input.folder_id,
         )
 
+        try:
+            return await self._run_pipeline(input)
+        except ActivityError as e:
+            return await self._handle_failure(input, e)
+        except Exception as e:
+            return await self._handle_failure(input, e)
+
+    async def _run_pipeline(self, input: SyncInput) -> dict:
+        """Execute the full sync pipeline with token refresh support."""
+
+        # Step 0: Refresh the access token to handle stale-token-on-replay
+        access_token = await self._refresh_token(input.user_refresh_token)
+
         # Step 1: Crawl folder to discover all files
         files = await workflow.execute_activity(
             crawl_folder,
-            args=[input.folder_id, input.user_access_token],
+            args=[input.folder_id, access_token],
             start_to_close_timeout=timedelta(minutes=10),
-            retry_policy=RetryPolicy(maximum_attempts=3),
+            retry_policy=_AUTH_RETRY,
         )
 
         workflow.logger.info("Discovered %d files in folder %s", len(files), input.folder_id)
@@ -90,13 +119,13 @@ class SyncFolderWorkflow:
                 idx, len(files), file_name, file_info.get("mimeType"),
             )
             try:
-                # 2a. Extract content from the file
-                extracted = await workflow.execute_activity(
-                    extract_content,
-                    args=[file_info, input.user_access_token],
-                    start_to_close_timeout=timedelta(minutes=5),
-                    retry_policy=RetryPolicy(maximum_attempts=2),
+                extracted = await self._extract_with_refresh(
+                    file_info, access_token, input.user_refresh_token,
                 )
+                # _extract_with_refresh may have refreshed the token
+                # Update our local copy (returned as second element if refreshed)
+                if isinstance(extracted, tuple):
+                    extracted, access_token = extracted
 
                 # Skip files with no extractable text
                 if not extracted or not extracted.get("text", "").strip():
@@ -121,7 +150,7 @@ class SyncFolderWorkflow:
                     generate_embeddings,
                     args=[chunks],
                     start_to_close_timeout=timedelta(minutes=10),
-                    retry_policy=RetryPolicy(maximum_attempts=3),
+                    retry_policy=_DEFAULT_RETRY,
                 )
 
                 # 2d. Generate hypothetical questions and their embeddings
@@ -145,14 +174,23 @@ class SyncFolderWorkflow:
                     start_to_close_timeout=timedelta(seconds=30),
                 )
 
+            except ActivityError as e:
+                if _is_token_expired(e):
+                    # Auth failed even after refresh — abort the entire pipeline
+                    raise
+                failed_count += 1
+                workflow.logger.error(
+                    "[WORKFLOW] FAILED to process file %s: %s: %s",
+                    file_name, type(e).__name__, str(e),
+                )
+                continue
+
             except Exception as e:
                 failed_count += 1
                 workflow.logger.error(
                     "[WORKFLOW] FAILED to process file %s: %s: %s",
                     file_name, type(e).__name__, str(e),
-                    exc_info=True,
                 )
-                # Continue with remaining files
                 continue
 
         # Step 3: Batch index all processed chunks
@@ -162,7 +200,6 @@ class SyncFolderWorkflow:
         )
         indexed_count = 0
         if all_chunks:
-            # Index in batches of 500 to avoid payload size limits
             batch_size = 500
             for i in range(0, len(all_chunks), batch_size):
                 batch = all_chunks[i : i + batch_size]
@@ -170,7 +207,7 @@ class SyncFolderWorkflow:
                     index_chunks,
                     args=[batch, input.project_id],
                     start_to_close_timeout=timedelta(minutes=5),
-                    retry_policy=RetryPolicy(maximum_attempts=3),
+                    retry_policy=_DEFAULT_RETRY,
                 )
                 indexed_count += result.get("indexed", 0)
 
@@ -196,3 +233,85 @@ class SyncFolderWorkflow:
 
         workflow.logger.info("SyncFolderWorkflow completed: %s", summary)
         return summary
+
+    async def _refresh_token(self, refresh_token: str) -> str:
+        """Call the refresh_google_token activity to get a fresh access token."""
+        return await workflow.execute_activity(
+            refresh_google_token,
+            args=[refresh_token],
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=_AUTH_RETRY,
+        )
+
+    async def _extract_with_refresh(
+        self,
+        file_info: dict,
+        access_token: str,
+        refresh_token: str,
+    ) -> dict | tuple[dict, str]:
+        """Extract content, retrying once with a refreshed token on 401.
+
+        Returns either the extracted dict, or a (extracted, new_token) tuple
+        if the token was refreshed mid-pipeline.
+        """
+        try:
+            result = await workflow.execute_activity(
+                extract_content,
+                args=[file_info, access_token],
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=_AUTH_RETRY,
+            )
+            return result
+        except ActivityError as e:
+            if not _is_token_expired(e):
+                raise
+
+            # Token expired mid-pipeline — try refreshing once
+            workflow.logger.info("[WORKFLOW] Token expired during extraction, refreshing...")
+            new_token = await self._refresh_token(refresh_token)
+            result = await workflow.execute_activity(
+                extract_content,
+                args=[file_info, new_token],
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=_AUTH_RETRY,
+            )
+            return (result, new_token)
+
+    async def _handle_failure(self, input: SyncInput, error: Exception) -> dict:
+        """Mark the project as FAILED with a user-friendly error message."""
+        if isinstance(error, ActivityError) and _is_token_expired(error):
+            error_msg = (
+                "Your Google Drive authorization has expired. "
+                "Please sign in again and re-sync your folder."
+            )
+        else:
+            error_msg = f"Sync failed: {type(error).__name__}: {str(error)}"
+
+        workflow.logger.error(
+            "[WORKFLOW] Pipeline failed for project=%s: %s",
+            input.project_id, error_msg,
+        )
+
+        try:
+            await workflow.execute_activity(
+                update_project,
+                args=[input.project_id, {
+                    "sync_status": "FAILED",
+                    "sync_error": error_msg,
+                }],
+                start_to_close_timeout=timedelta(seconds=30),
+            )
+        except Exception as db_err:
+            workflow.logger.error(
+                "[WORKFLOW] Could not update project status to FAILED: %s", db_err,
+            )
+
+        return {
+            "project_id": input.project_id,
+            "folder_id": input.folder_id,
+            "total_files": 0,
+            "processed_files": 0,
+            "failed_files": 0,
+            "indexed_chunks": 0,
+            "error": error_msg,
+        }

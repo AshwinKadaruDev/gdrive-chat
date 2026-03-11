@@ -1,10 +1,11 @@
 import { useState, useCallback, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import {
   getChatSessions,
   getDriveChatSessions,
   getMessages,
   streamChat,
+  deleteChatSession,
 } from "@/services/api";
 import type { Message, AgentType, Citation } from "@/types";
 
@@ -42,6 +43,8 @@ export function useUnifiedChat({
   const [statusText, setStatusText] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const streamingContentRef = useRef("");
+  const streamingSessionIdRef = useRef<string | null>(null);
+  const existingMessagesRef = useRef<Message[] | undefined>(undefined);
 
   const { data: existingMessages } = useQuery({
     queryKey: ["chat-messages", sessionId],
@@ -49,8 +52,16 @@ export function useUnifiedChat({
     enabled: !!sessionId,
   });
 
-  const allMessages =
-    sessionId && existingMessages ? existingMessages : messages;
+  // Keep ref in sync so sendMessage can read the latest value
+  existingMessagesRef.current = existingMessages;
+
+  // During streaming, always use local messages (which include streaming content).
+  // Otherwise, prefer server data for existing sessions.
+  const allMessages = isLoading
+    ? messages
+    : sessionId && existingMessages
+      ? existingMessages
+      : messages;
 
   const sendMessage = useCallback(
     async (content: string) => {
@@ -75,7 +86,12 @@ export function useUnifiedChat({
         created_at: new Date().toISOString(),
       };
 
-      setMessages((prev) => [...prev, userMessage, assistantPlaceholder]);
+      // Seed with existing history for follow-up messages in an existing session
+      const base =
+        sessionId && existingMessagesRef.current
+          ? existingMessagesRef.current
+          : [];
+      setMessages([...base, userMessage, assistantPlaceholder]);
       setIsLoading(true);
       setStatusText(null);
       streamingContentRef.current = "";
@@ -95,9 +111,10 @@ export function useUnifiedChat({
       try {
         await streamChat(params as Parameters<typeof streamChat>[0], {
           onSession: (newSessionId) => {
-            if (!sessionId) {
-              setSessionId(newSessionId);
-            }
+            // Store in ref during streaming — don't update state yet.
+            // Setting sessionId now would switch allMessages to the
+            // (still-empty) existingMessages query, hiding streaming content.
+            streamingSessionIdRef.current = newSessionId;
           },
           onStatus: (text) => {
             setStatusText(text);
@@ -124,12 +141,26 @@ export function useUnifiedChat({
             );
           },
           onDone: () => {
+            // Commit the session ID now that streaming is complete
+            const newId = streamingSessionIdRef.current;
+            if (newId) {
+              setSessionId(newId);
+              streamingSessionIdRef.current = null;
+            }
             queryClient.invalidateQueries({
               queryKey:
                 agentType === "RAG"
                   ? ["chat-sessions", projectId]
                   : ["drive-chat-sessions"],
             });
+            // Invalidate messages so fresh data loads when we switch
+            // from local messages back to existingMessages
+            const sid = sessionId ?? newId;
+            if (sid) {
+              queryClient.invalidateQueries({
+                queryKey: ["chat-messages", sid],
+              });
+            }
           },
           onError: (error) => {
             setMessages((prev) =>
@@ -177,4 +208,22 @@ export function useUnifiedChat({
     selectSession,
     startNewChat,
   };
+}
+
+export function useDeleteChatSession(
+  agentType: AgentType,
+  projectId: string | null
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) => deleteChatSession(sessionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey:
+          agentType === "RAG"
+            ? ["chat-sessions", projectId]
+            : ["drive-chat-sessions"],
+      });
+    },
+  });
 }

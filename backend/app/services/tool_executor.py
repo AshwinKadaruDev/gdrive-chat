@@ -436,6 +436,36 @@ async def _handle_get_document_outline(
     return f"Outline of {file_name}:\n" + "\n".join(outline_lines), []
 
 
+async def _download_spreadsheet_bytes(
+    file_id: str,
+    access_token: str,
+    drive_service: "GoogleDriveService",
+) -> tuple[bytes, str, str]:
+    """Download spreadsheet bytes, handling native Google Sheets via export.
+
+    Returns (content_bytes, file_name, mime_type).
+    """
+    metadata = await drive_service.get_file_metadata(
+        file_id=file_id, access_token=access_token
+    )
+    mime_type = metadata.get("mimeType", "")
+    file_name = metadata.get("name", "unknown")
+
+    if "google-apps.spreadsheet" in mime_type:
+        content = await drive_service.export_google_doc(
+            file_id=file_id,
+            access_token=access_token,
+            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_bytes=True,
+        )
+    else:
+        content = await drive_service.download_file(
+            file_id=file_id, access_token=access_token
+        )
+
+    return content, file_name, mime_type
+
+
 async def _handle_get_spreadsheet_overview(
     tool_args: dict,
     project_id: str,
@@ -446,27 +476,9 @@ async def _handle_get_spreadsheet_overview(
 ) -> tuple[str, list[Citation]]:
     file_id = tool_args["file_id"]
 
-    metadata = await drive_service.get_file_metadata(
-        file_id=file_id, access_token=access_token
+    content, file_name, mime_type = await _download_spreadsheet_bytes(
+        file_id, access_token, drive_service
     )
-    mime_type = metadata.get("mimeType", "")
-    file_name = metadata.get("name", "unknown")
-
-    if "google-apps.spreadsheet" in mime_type:
-        # Export Google Sheet as xlsx
-        content_text = await drive_service.export_google_doc(
-            file_id=file_id,
-            access_token=access_token,
-            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        # export_google_doc returns text, but for xlsx we need bytes
-        content = await drive_service.download_file(
-            file_id=file_id, access_token=access_token
-        )
-    else:
-        content = await drive_service.download_file(
-            file_id=file_id, access_token=access_token
-        )
 
     import openpyxl
 
@@ -517,8 +529,8 @@ async def _handle_read_spreadsheet_rows(
     start_row = tool_args["start_row"]
     end_row = tool_args["end_row"]
 
-    content = await drive_service.download_file(
-        file_id=file_id, access_token=access_token
+    content, _file_name, _mime_type = await _download_spreadsheet_bytes(
+        file_id, access_token, drive_service
     )
 
     import openpyxl
@@ -564,8 +576,8 @@ async def _handle_search_spreadsheet(
     query = tool_args["query"].lower()
     target_sheet = tool_args.get("sheet_name")
 
-    content = await drive_service.download_file(
-        file_id=file_id, access_token=access_token
+    content, _file_name, _mime_type = await _download_spreadsheet_bytes(
+        file_id, access_token, drive_service
     )
 
     import openpyxl
@@ -620,8 +632,8 @@ async def _handle_get_column_stats(
     sheet_name = tool_args["sheet_name"]
     column_name = tool_args["column_name"]
 
-    content = await drive_service.download_file(
-        file_id=file_id, access_token=access_token
+    content, _file_name, _mime_type = await _download_spreadsheet_bytes(
+        file_id, access_token, drive_service
     )
 
     import openpyxl

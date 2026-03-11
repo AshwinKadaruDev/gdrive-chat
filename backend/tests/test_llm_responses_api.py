@@ -216,7 +216,7 @@ class TestNormalizeOpenAIResponse:
         assert msg.tool_calls[1].id == "fc_2"
         assert msg.tool_calls[1].function.arguments == '{"file_id": "abc"}'
 
-    def test_preserves_raw_items(self):
+    def test_preserves_raw_items_as_dicts(self):
         items = [
             _make_reasoning_item("Let me think..."),
             _make_message_item("Done."),
@@ -224,7 +224,13 @@ class TestNormalizeOpenAIResponse:
         response = SimpleNamespace(output=items)
         result = LLMClient._normalize_openai_response(response)
 
-        assert result.choices[0].message._raw_output_items == items
+        # Raw items are serialized to dicts (not original Pydantic objects)
+        # to avoid SDK serialization issues on multi-turn conversations.
+        raw = result.choices[0].message._raw_output_items
+        assert len(raw) == 2
+        assert all(isinstance(r, dict) for r in raw)
+        assert raw[0]["type"] == "reasoning"
+        assert raw[1]["type"] == "message"
 
     def test_mixed_reasoning_and_calls(self):
         items = [

@@ -20,7 +20,7 @@ export default function ChatInput({
     const textarea = textareaRef.current;
     if (textarea) {
       textarea.style.height = "auto";
-      textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`;
     }
   }, [value]);
 
@@ -43,9 +43,9 @@ export default function ChatInput({
   };
 
   return (
-    <div className="border-t border-[var(--border-subtle)] bg-surface-800 px-4 py-3">
+    <div className="px-4 pb-4 pt-2">
       <div className="mx-auto max-w-3xl">
-        <div className="flex items-end gap-3">
+        <div className="rounded-2xl border border-[var(--border-subtle)] bg-surface-800 px-4 pb-3 pt-3 shadow-lg shadow-black/10 dark:shadow-black/20">
           <textarea
             ref={textareaRef}
             value={value}
@@ -54,19 +54,21 @@ export default function ChatInput({
             placeholder="Ask a question about your documents..."
             disabled={isLoading || disabled}
             rows={1}
-            className="max-h-40 min-h-[40px] flex-1 resize-none bg-transparent px-2 py-1.5 text-[15px] text-fg-primary placeholder-surface-100 focus:outline-none disabled:opacity-50"
+            className="max-h-[7.5rem] min-h-[1.75rem] w-full resize-none bg-transparent text-[15px] leading-relaxed text-fg-primary placeholder-surface-100/60 focus:outline-none disabled:opacity-50"
           />
-          <button
-            onClick={handleSubmit}
-            disabled={!value.trim() || isLoading || disabled}
-            className="flex h-9 w-9 flex-shrink-0 items-center justify-center bg-fg-primary text-fg-inverted transition-colors hover:bg-brand-500 disabled:opacity-30"
-          >
-            <Send className="h-4 w-4" />
-          </button>
+          <div className="flex items-center justify-between pt-2">
+            <p className="text-[11px] text-surface-100/40">
+              Enter to send, Shift + Enter for new line
+            </p>
+            <button
+              onClick={handleSubmit}
+              disabled={!value.trim() || isLoading || disabled}
+              className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-fg-primary text-fg-inverted transition-colors hover:bg-brand-500 disabled:opacity-30"
+            >
+              <Send className="h-4 w-4" />
+            </button>
+          </div>
         </div>
-        <p className="mt-2 text-center text-[11px] text-surface-100/60">
-          Press Enter to send, Shift + Enter for a new line
-        </p>
       </div>
     </div>
   );

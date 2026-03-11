@@ -36,7 +36,7 @@ export default function MessageList({ messages, isLoading, statusText }: Message
       ref={containerRef}
       className="flex-1 overflow-y-auto px-4 py-6"
     >
-      <div className="mx-auto max-w-3xl space-y-4">
+      <div className="mx-auto max-w-3xl space-y-6">
         {messages.map((message) => (
           <MessageBubble key={message.id} message={message} />
         ))}

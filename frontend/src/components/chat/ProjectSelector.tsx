@@ -7,6 +7,7 @@ interface ProjectSelectorProps {
   onSelect: (project: Project) => void;
   label?: string;
   onAddFolder?: () => void;
+  disabled?: boolean;
 }
 
 export default function ProjectSelector({
@@ -15,6 +16,7 @@ export default function ProjectSelector({
   onSelect,
   label = "Chat with",
   onAddFolder,
+  disabled = false,
 }: ProjectSelectorProps) {
   return (
     <div className="relative">
@@ -34,7 +36,8 @@ export default function ProjectSelector({
             const project = projects.find((p) => p.id === e.target.value);
             if (project) onSelect(project);
           }}
-          className="input-field appearance-none pl-9 pr-9"
+          disabled={disabled}
+          className={`input-field appearance-none pl-9 pr-9 ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
         >
           <option value="" disabled>
             Select a folder...
@@ -44,7 +47,7 @@ export default function ProjectSelector({
               {project.name} ({project.files_total} files)
             </option>
           ))}
-          {onAddFolder && (
+          {onAddFolder && !disabled && (
             <>
               <option disabled>──────────</option>
               <option value="__add_new__">+ Add new folder...</option>

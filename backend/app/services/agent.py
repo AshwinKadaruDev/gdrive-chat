@@ -32,10 +32,20 @@ class AgentResponse:
 SYSTEM_PROMPT = """\
 You are an expert research assistant with access to a project folder containing \
 documents, spreadsheets, and other files. Your job is to answer the user's question \
-accurately and thoroughly using ONLY the information available in the project files.
+accurately and thoroughly.
 
-IMPORTANT RULES:
-1. ALWAYS search before answering. Never guess or use prior knowledge.
+WHEN TO USE TOOLS vs. ANSWER DIRECTLY:
+- If the user asks about specific facts, data, or content from the project files → \
+search and read the files before answering.
+- If the answer is already in the conversation history (e.g. a follow-up question \
+about something you just found) → answer directly from context without searching again.
+- If the user asks a general knowledge question (e.g. "what does 401k mean?", \
+"explain ROI") → answer directly using your own knowledge. No tools needed.
+- When in doubt about whether information is in the files, search first.
+
+RULES:
+1. When answering from project files, cite your sources. When answering from general \
+knowledge or conversation context, just answer naturally — no citations needed.
 2. If you cannot find the answer after thorough searching, use report_inability to explain what you tried.
 3. If the question is ambiguous, use request_clarification to ask for more details.
 4. For spreadsheet questions, first use get_spreadsheet_overview, then targeted tools.
@@ -44,42 +54,50 @@ IMPORTANT RULES:
 7. If you find partial information, say so explicitly rather than making up the rest.
 
 RESPONSE FORMAT:
-- Write your final answer in **Markdown** (headings, bold, bullets, tables, etc.).
-- Cite sources using numbered superscripts like [1], [2], etc. in your text.
-- Each number corresponds to a source you found. The system will attach the source \
-details automatically — just use the numbers inline where relevant.
+- Write in clear Markdown. Use headings, bullets, or tables only when they help \
+structure a complex answer — not for short replies.
+- When citing project files, use numbered references like [1], [2] inline right \
+after the claim they support. The system attaches source details automatically.
 - Example: "Revenue grew 15% year-over-year [1], driven primarily by the APAC region [2]."
-- Place citations right after the specific claim they support, not at the end of a paragraph.
+- For conversational or general-knowledge answers, write naturally without citations \
+or heavy formatting.
 
 You have access to the following tools to search and read the project files. \
-Use them strategically to find the best answer.\
+Use them strategically — only when the answer requires information from the files.\
 """
 
 DRIVE_SYSTEM_PROMPT = """\
 You are an expert research assistant with access to a Google Drive folder. \
-Your job is to answer the user's question accurately using ONLY the files in \
-the folder. Files are accessed live via the Google Drive API — there is no \
-pre-built search index.
+Your job is to answer the user's question accurately. Files are accessed live \
+via the Google Drive API — there is no pre-built search index.
 
-IMPORTANT RULES:
-1. ALWAYS search before answering. Never guess or use prior knowledge.
-2. Use search_drive as your primary search tool to find relevant files by keyword.
-3. After finding files, use get_file_content to read their full text, or \
+WHEN TO USE TOOLS vs. ANSWER DIRECTLY:
+- If the user asks about specific facts, data, or content from the Drive files → \
+search and read the files before answering.
+- If the answer is already in the conversation history (e.g. a follow-up about \
+something you just found) → answer directly from context without searching again.
+- If the user asks a general knowledge question → answer directly. No tools needed.
+- When in doubt about whether information is in the files, search first.
+
+RULES:
+1. Use search_drive as your primary search tool to find relevant files by keyword.
+2. After finding files, use get_file_content to read their full text, or \
 search_within_file_text for targeted lookups within a specific file.
-4. If search_drive returns no results, try get_folder_structure to see all \
+3. If search_drive returns no results, try get_folder_structure to see all \
 available files, then read promising ones directly.
-5. If you cannot find the answer after thorough searching, use report_inability.
-6. If the question is ambiguous, use request_clarification.
-7. Be precise and quote relevant text when appropriate.
-8. For spreadsheet questions, use get_spreadsheet_overview first.
+4. If you cannot find the answer after thorough searching, use report_inability.
+5. If the question is ambiguous, use request_clarification.
+6. Be precise and quote relevant text when appropriate.
+7. For spreadsheet questions, use get_spreadsheet_overview first.
 
 RESPONSE FORMAT:
-- Write your final answer in **Markdown** (headings, bold, bullets, tables, etc.).
-- Cite sources using numbered superscripts like [1], [2], etc. in your text.
-- Each number corresponds to a source you found. The system will attach the source \
-details automatically — just use the numbers inline where relevant.
+- Write in clear Markdown. Use headings, bullets, or tables only when they help \
+structure a complex answer — not for short replies.
+- When citing Drive files, use numbered references like [1], [2] inline right \
+after the claim they support. The system attaches source details automatically.
 - Example: "Revenue grew 15% year-over-year [1], driven primarily by the APAC region [2]."
-- Place citations right after the specific claim they support, not at the end of a paragraph.
+- For conversational or general-knowledge answers, write naturally without citations \
+or heavy formatting.
 
 Note: search_drive uses Google Drive keyword search (fullText contains), \
 not semantic search. Use specific, targeted keywords for best results. \
@@ -102,7 +120,7 @@ class FolderAgent:
         drive_service: "GoogleDriveService",
         search_service: "AzureSearchService | None" = None,
         embeddings_service: "EmbeddingsService | None" = None,
-        model: str = "claude-sonnet-4-5-20250929",
+        model: str = "gpt-5.2",  # TODO: Re-enable Anthropic — was "claude-sonnet-4-5-20250929"
         max_iterations: int = 15,
         tools: list[dict] | None = None,
         system_prompt: str | None = None,
@@ -290,6 +308,10 @@ class FolderAgent:
         - ``("citations", [...])`` — citation data
         - ``("done", None)`` — signals completion
         """
+        logger.info(
+            "[AGENT-STREAM] Starting: model=%s, question=%r, folder=%s, history=%d msgs",
+            self.model, question[:80], project_id, len(chat_history) if chat_history else 0,
+        )
         messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
         if chat_history:
             for msg in chat_history:
@@ -318,26 +340,44 @@ class FolderAgent:
         for iteration in range(1, self.max_iterations + 1):
             logger.info("Agent iteration %d/%d (streaming)", iteration, self.max_iterations)
 
-            response = await self.llm_client.call_with_tools(
+            # Stream the LLM call — yields text deltas (for final answers) and a response_complete event
+            llm_response = None
+            async for event in self.llm_client.stream_call_with_tools(
                 messages=messages,
                 tools=self.tools,
                 model=self.model,
-            )
+            ):
+                if event.type == "text_delta" and event.text:
+                    yield ("delta", event.text)
+                elif event.type == "response_complete":
+                    llm_response = event.response
 
-            choice = response.choices[0]
+            if llm_response is None:
+                logger.error("[AGENT-STREAM] No response_complete event received")
+                yield ("delta", "An error occurred while processing your request.")
+                yield ("citations", [])
+                yield ("done", None)
+                return
+
+            choice = llm_response.choices[0]
             assistant_message = choice.message
+
+            logger.info(
+                "[AGENT-STREAM] Iteration %d result: content_length=%s, tool_calls=%d",
+                iteration,
+                len(assistant_message.content) if assistant_message.content else 0,
+                len(assistant_message.tool_calls),
+            )
 
             if assistant_message.content:
                 messages.append({"role": "assistant", "content": assistant_message.content})
 
-            # Final answer — no tool calls
+            # Final answer — no tool calls (text was already streamed via deltas)
             if not assistant_message.tool_calls:
-                final_text = assistant_message.content or ""
-                # Stream the final text in word-sized chunks
-                words = final_text.split(" ")
-                for i, word in enumerate(words):
-                    chunk = word if i == len(words) - 1 else word + " "
-                    yield ("delta", chunk)
+                logger.info(
+                    "[AGENT-STREAM] Final answer: %d chars, %d citations",
+                    len(assistant_message.content or ""), len(all_citations),
+                )
 
                 # Deduplicate citations by (file_id, location)
                 seen: set[tuple[str, str | None]] = set()
@@ -390,6 +430,7 @@ class FolderAgent:
                 except json.JSONDecodeError:
                     tool_args = {}
 
+                logger.info("[AGENT-STREAM] Calling tool: %s(%s)", tool_name, tool_args)
                 yield ("status", _TOOL_STATUS.get(tool_name, f"Using {tool_name}..."))
 
                 result_str, citations = await execute_tool(
@@ -400,6 +441,10 @@ class FolderAgent:
                     search_service=self.search_service,
                     drive_service=self.drive_service,
                     embeddings_service=self.embeddings_service,
+                )
+                logger.info(
+                    "[AGENT-STREAM] Tool %s returned: %d chars, %d citations",
+                    tool_name, len(result_str), len(citations),
                 )
                 all_citations.extend(citations)
                 messages.append({

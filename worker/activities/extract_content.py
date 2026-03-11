@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,22 @@ async def extract_content(file_info: dict, access_token: str) -> dict:
 
     activity.logger.info("Extracting content from '%s' (type=%s)", file_name, mime_type)
 
+    try:
+        return await _extract_by_mime(file_id, file_name, mime_type, headers)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            raise ApplicationError(
+                "Google Drive token expired",
+                type="TOKEN_EXPIRED",
+                non_retryable=True,
+            ) from e
+        raise
+
+
+async def _extract_by_mime(
+    file_id: str, file_name: str, mime_type: str, headers: dict
+) -> dict:
+    """Dispatch extraction based on MIME type."""
     async with httpx.AsyncClient(timeout=60.0) as client:
         # Google Docs -> export as plain text
         if mime_type == GOOGLE_DOCS:

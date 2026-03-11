@@ -13,9 +13,9 @@ FOLDER_ID = "1aBcD_eFgHiJk"
 class TestValidateFolder:
     """POST /api/projects/validate-folder"""
 
-    @patch("app.routers.projects.decrypt_token", return_value="access-tok")
+    @patch("app.routers.projects.get_valid_access_token", new_callable=AsyncMock, return_value="access-tok")
     @patch("app.routers.projects.GoogleDriveService")
-    async def test_valid_folder(self, MockDrive, _dec, test_client):
+    async def test_valid_folder(self, MockDrive, _tok, test_client):
         instance = MockDrive.return_value
         instance.validate_folder = AsyncMock(
             return_value={
@@ -44,9 +44,9 @@ class TestValidateFolder:
         )
         assert resp.status_code == 422
 
-    @patch("app.routers.projects.decrypt_token", return_value="access-tok")
+    @patch("app.routers.projects.get_valid_access_token", new_callable=AsyncMock, return_value="access-tok")
     @patch("app.routers.projects.GoogleDriveService")
-    async def test_not_a_folder(self, MockDrive, _dec, test_client):
+    async def test_not_a_folder(self, MockDrive, _tok, test_client):
         instance = MockDrive.return_value
         instance.validate_folder = AsyncMock(
             side_effect=DriveValidationError(
@@ -62,9 +62,9 @@ class TestValidateFolder:
         assert resp.status_code == 422
         assert "file, not a folder" in resp.json()["detail"]
 
-    @patch("app.routers.projects.decrypt_token", return_value="access-tok")
+    @patch("app.routers.projects.get_valid_access_token", new_callable=AsyncMock, return_value="access-tok")
     @patch("app.routers.projects.GoogleDriveService")
-    async def test_no_access(self, MockDrive, _dec, test_client):
+    async def test_no_access(self, MockDrive, _tok, test_client):
         instance = MockDrive.return_value
         instance.validate_folder = AsyncMock(
             side_effect=DriveValidationError(
@@ -80,9 +80,9 @@ class TestValidateFolder:
         assert resp.status_code == 422
         assert "access" in resp.json()["detail"].lower()
 
-    @patch("app.routers.projects.decrypt_token", return_value="access-tok")
+    @patch("app.routers.projects.get_valid_access_token", new_callable=AsyncMock, return_value="access-tok")
     @patch("app.routers.projects.GoogleDriveService")
-    async def test_not_found(self, MockDrive, _dec, test_client):
+    async def test_not_found(self, MockDrive, _tok, test_client):
         instance = MockDrive.return_value
         instance.validate_folder = AsyncMock(
             side_effect=DriveValidationError(

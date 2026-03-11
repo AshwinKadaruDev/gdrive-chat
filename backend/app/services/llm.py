@@ -1,5 +1,6 @@
 import json
 import logging
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -45,6 +46,15 @@ class LLMResponse:
     choices: list[Choice] = field(default_factory=list)
 
 
+@dataclass
+class LLMStreamEvent:
+    """Event yielded during streaming LLM calls."""
+
+    type: str  # "text_delta" or "response_complete"
+    text: str | None = None
+    response: LLMResponse | None = None
+
+
 class LLMClient:
     """
     Unified LLM client supporting both Anthropic (Claude) and OpenAI models.
@@ -60,21 +70,24 @@ class LLMClient:
         self._anthropic_client: Any = None
         self._openai_client: Any = None
 
-        if anthropic_api_key:
-            import anthropic
-
-            self._anthropic_client = anthropic.AsyncAnthropic(
-                api_key=anthropic_api_key
-            )
+        # TODO: Re-enable Anthropic support
+        # if anthropic_api_key:
+        #     import anthropic
+        #     self._anthropic_client = anthropic.AsyncAnthropic(
+        #         api_key=anthropic_api_key
+        #     )
 
         if openai_api_key:
             from openai import AsyncOpenAI
 
             self._openai_client = AsyncOpenAI(api_key=openai_api_key)
+            logger.info("[LLM] OpenAI client initialized (openai SDK)")
+        else:
+            logger.warning("[LLM] No OpenAI API key provided — client not created")
 
     def _is_anthropic_model(self, model: str) -> bool:
         """Determine if the model string refers to an Anthropic model."""
-        return "claude" in model.lower()
+        return False  # TODO: Re-enable — was: "claude" in model.lower()
 
     async def call_with_tools(
         self,
@@ -90,11 +103,16 @@ class LLMClient:
         Prefers Anthropic if the model is a Claude model and the key is available.
         Falls back to OpenAI otherwise.
         """
-        if self._is_anthropic_model(model) and self._anthropic_client:
-            return await self._call_anthropic(
-                messages, tools, model, tool_choice, temperature
-            )
-        elif self._openai_client:
+        logger.info(
+            "[LLM] call_with_tools: model=%s, tools=%d, messages=%d, tool_choice=%s",
+            model, len(tools), len(messages), tool_choice,
+        )
+        # TODO: Re-enable Anthropic routing
+        # if self._is_anthropic_model(model) and self._anthropic_client:
+        #     return await self._call_anthropic(
+        #         messages, tools, model, tool_choice, temperature
+        #     )
+        if self._openai_client:
             return await self._call_openai(
                 messages, tools, model, tool_choice, temperature
             )
@@ -103,16 +121,104 @@ class LLMClient:
                 "No LLM client available. Provide at least one API key."
             )
 
+    async def stream_call_with_tools(
+        self,
+        messages: list,
+        tools: list,
+        model: str,
+        tool_choice: str = "auto",
+        temperature: float = 0.1,
+    ) -> AsyncGenerator[LLMStreamEvent, None]:
+        """Stream an LLM call, yielding text deltas and a final response_complete event."""
+        logger.info(
+            "[LLM] stream_call_with_tools: model=%s, tools=%d, messages=%d",
+            model, len(tools), len(messages),
+        )
+        if self._openai_client:
+            async for event in self._stream_openai(
+                messages, tools, model, tool_choice, temperature
+            ):
+                yield event
+        else:
+            raise ValueError(
+                "No LLM client available. Provide at least one API key."
+            )
+
+    async def _stream_openai(
+        self,
+        messages: list,
+        tools: list,
+        model: str,
+        tool_choice: str,
+        temperature: float,
+    ) -> AsyncGenerator[LLMStreamEvent, None]:
+        """Stream from OpenAI Responses API, yielding text deltas and response_complete."""
+        if "claude" in model.lower():
+            logger.info("[LLM] Remapping Claude model %r → gpt-5.2", model)
+            model = "gpt-5.2"
+
+        instructions, input_items = self._convert_messages_to_responses_api(messages)
+        responses_tools = self._convert_tools_to_responses_api(tools)
+
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "input": input_items,
+            "tools": responses_tools,
+            "reasoning": {"effort": "xhigh"},
+            "stream": True,
+        }
+        if instructions:
+            kwargs["instructions"] = instructions
+        if tool_choice != "auto":
+            kwargs["tool_choice"] = tool_choice
+
+        logger.info(
+            "[LLM] OpenAI Responses API streaming call: model=%s, input_items=%d, tools=%d",
+            model, len(input_items), len(responses_tools),
+        )
+
+        has_function_calls = False
+
+        try:
+            async with await self._openai_client.responses.create(**kwargs) as stream:
+                async for event in stream:
+                    event_type = event.type
+
+                    # Track if this response contains function calls
+                    if event_type == "response.output_item.added":
+                        if hasattr(event, "item") and getattr(event.item, "type", None) == "function_call":
+                            has_function_calls = True
+
+                    # Yield text deltas only when there are no function calls
+                    # (i.e., this is the final answer, not intermediate reasoning)
+                    elif event_type == "response.output_text.delta":
+                        if not has_function_calls:
+                            yield LLMStreamEvent(type="text_delta", text=event.delta)
+
+                    # On completion, normalize and yield the full response
+                    elif event_type == "response.completed":
+                        result = self._normalize_openai_response(event.response)
+                        logger.info(
+                            "[LLM] Streaming response complete: content_length=%s, tool_calls=%d",
+                            len(result.choices[0].message.content) if result.choices[0].message.content else 0,
+                            len(result.choices[0].message.tool_calls),
+                        )
+                        yield LLMStreamEvent(type="response_complete", response=result)
+        except Exception:
+            logger.exception("[LLM] OpenAI Responses API streaming call failed")
+            raise
+
     async def complete(self, prompt: str, max_tokens: int = 500) -> str:
         """Simple text completion without tool use."""
-        if self._anthropic_client:
-            response = await self._anthropic_client.messages.create(
-                model="claude-sonnet-4-5-20250929",
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return response.content[0].text
-        elif self._openai_client:
+        # TODO: Re-enable Anthropic support
+        # if self._anthropic_client:
+        #     response = await self._anthropic_client.messages.create(
+        #         model="claude-sonnet-4-5-20250929",
+        #         max_tokens=max_tokens,
+        #         messages=[{"role": "user", "content": prompt}],
+        #     )
+        #     return response.content[0].text
+        if self._openai_client:
             response = await self._openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 max_tokens=max_tokens,
@@ -125,184 +231,11 @@ class LLMClient:
             )
 
     # ------------------------------------------------------------------ #
-    # Anthropic
+    # TODO: Re-enable Anthropic support
+    # The following methods are commented out while Anthropic is disabled:
+    # _call_anthropic, _convert_messages_to_anthropic,
+    # _convert_tools_to_anthropic, _normalize_anthropic_response
     # ------------------------------------------------------------------ #
-
-    async def _call_anthropic(
-        self,
-        messages: list,
-        tools: list,
-        model: str,
-        tool_choice: str,
-        temperature: float,
-    ) -> LLMResponse:
-        """Call Anthropic's Messages API with tool use."""
-        # Convert OpenAI-style tool defs to Anthropic format
-        anthropic_tools = self._convert_tools_to_anthropic(tools)
-
-        # Separate system message and convert conversation messages
-        system_prompt: str | None = None
-        conversation = self._convert_messages_to_anthropic(messages)
-
-        # Extract system prompt from converted messages
-        filtered: list[dict] = []
-        for msg in conversation:
-            if msg.get("role") == "system":
-                system_prompt = msg["content"]
-            else:
-                filtered.append(msg)
-        conversation = filtered
-
-        # Build the Anthropic tool_choice parameter
-        if tool_choice == "auto":
-            anthropic_tool_choice: dict[str, str] = {"type": "auto"}
-        elif tool_choice == "none":
-            anthropic_tool_choice = {"type": "none"}  # not officially supported, but safe
-        elif tool_choice == "required":
-            anthropic_tool_choice = {"type": "any"}
-        else:
-            anthropic_tool_choice = {"type": "tool", "name": tool_choice}
-
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "max_tokens": 4096,
-            "temperature": temperature,
-            "messages": conversation,
-            "tools": anthropic_tools,
-            "tool_choice": anthropic_tool_choice,
-        }
-        if system_prompt:
-            kwargs["system"] = system_prompt
-
-        response = await self._anthropic_client.messages.create(**kwargs)
-        return self._normalize_anthropic_response(response)
-
-    @staticmethod
-    def _convert_messages_to_anthropic(messages: list[dict]) -> list[dict]:
-        """
-        Convert OpenAI-style messages to Anthropic format.
-
-        Key differences:
-        - System messages are kept as-is (extracted later).
-        - Assistant messages with ``tool_calls`` become content blocks with
-          ``tool_use`` entries.
-        - ``role: "tool"`` messages become ``role: "user"`` with
-          ``tool_result`` content blocks.  Consecutive tool results are
-          merged into a single user message.
-        """
-        result: list[dict] = []
-
-        for msg in messages:
-            role = msg.get("role")
-
-            if role == "system":
-                result.append(msg)
-
-            elif role == "assistant":
-                tool_calls = msg.get("tool_calls")
-                if tool_calls:
-                    content_blocks: list[dict] = []
-                    # Include text if present
-                    if msg.get("content"):
-                        content_blocks.append(
-                            {"type": "text", "text": msg["content"]}
-                        )
-                    # Convert each tool_call to a tool_use block
-                    for tc in tool_calls:
-                        func = tc.get("function", {})
-                        arguments = func.get("arguments", "{}")
-                        try:
-                            input_data = json.loads(arguments)
-                        except (json.JSONDecodeError, TypeError):
-                            input_data = {}
-                        content_blocks.append(
-                            {
-                                "type": "tool_use",
-                                "id": tc["id"],
-                                "name": func.get("name", ""),
-                                "input": input_data,
-                            }
-                        )
-                    result.append({"role": "assistant", "content": content_blocks})
-                else:
-                    # Plain text assistant message
-                    result.append({"role": "assistant", "content": msg.get("content", "")})
-
-            elif role == "tool":
-                # Convert to user message with tool_result content block
-                tool_result_block = {
-                    "type": "tool_result",
-                    "tool_use_id": msg.get("tool_call_id", ""),
-                    "content": msg.get("content", ""),
-                }
-                # Merge with previous user message if it also contains tool_results
-                if (
-                    result
-                    and result[-1].get("role") == "user"
-                    and isinstance(result[-1].get("content"), list)
-                    and result[-1]["content"]
-                    and result[-1]["content"][0].get("type") == "tool_result"
-                ):
-                    result[-1]["content"].append(tool_result_block)
-                else:
-                    result.append({"role": "user", "content": [tool_result_block]})
-
-            elif role == "user":
-                result.append({"role": "user", "content": msg.get("content", "")})
-
-            else:
-                # Unknown role -- pass through
-                result.append(msg)
-
-        return result
-
-    @staticmethod
-    def _convert_tools_to_anthropic(tools: list[dict]) -> list[dict]:
-        """Convert OpenAI-style function definitions to Anthropic tool format."""
-        anthropic_tools: list[dict] = []
-        for tool in tools:
-            func = tool.get("function", tool)
-            anthropic_tools.append(
-                {
-                    "name": func["name"],
-                    "description": func.get("description", ""),
-                    "input_schema": func.get("parameters", {}),
-                }
-            )
-        return anthropic_tools
-
-    @staticmethod
-    def _normalize_anthropic_response(response: Any) -> LLMResponse:
-        """Convert an Anthropic response into the normalized LLMResponse."""
-        text_parts: list[str] = []
-        tool_calls: list[ToolCall] = []
-
-        for block in response.content:
-            if block.type == "text":
-                text_parts.append(block.text)
-            elif block.type == "tool_use":
-                tool_calls.append(
-                    ToolCall(
-                        id=block.id,
-                        function=FunctionCall(
-                            name=block.name,
-                            arguments=json.dumps(block.input),
-                        ),
-                    )
-                )
-
-        content = "\n".join(text_parts) if text_parts else None
-
-        return LLMResponse(
-            choices=[
-                Choice(
-                    message=MessageContent(
-                        content=content,
-                        tool_calls=tool_calls,
-                    )
-                )
-            ]
-        )
 
     # ------------------------------------------------------------------ #
     # OpenAI (Responses API)
@@ -389,8 +322,9 @@ class LLMClient:
         temperature: float,
     ) -> LLMResponse:
         """Call OpenAI's Responses API with function calling."""
-        # If model was a Claude model but no Anthropic key, fall back to GPT-5.2
-        if self._is_anthropic_model(model):
+        # If model was a Claude model, fall back to GPT-5.2
+        if "claude" in model.lower():
+            logger.info("[LLM] Remapping Claude model %r → gpt-5.2", model)
             model = "gpt-5.2"
 
         instructions, input_items = self._convert_messages_to_responses_api(messages)
@@ -407,8 +341,22 @@ class LLMClient:
         if tool_choice != "auto":
             kwargs["tool_choice"] = tool_choice
 
-        response = await self._openai_client.responses.create(**kwargs)
-        return self._normalize_openai_response(response)
+        logger.info(
+            "[LLM] OpenAI Responses API call: model=%s, input_items=%d, tools=%d",
+            model, len(input_items), len(responses_tools),
+        )
+        try:
+            response = await self._openai_client.responses.create(**kwargs)
+        except Exception:
+            logger.exception("[LLM] OpenAI Responses API call failed")
+            raise
+        result = self._normalize_openai_response(response)
+        logger.info(
+            "[LLM] OpenAI response: content_length=%s, tool_calls=%d",
+            len(result.choices[0].message.content) if result.choices[0].message.content else 0,
+            len(result.choices[0].message.tool_calls),
+        )
+        return result
 
     @staticmethod
     def _normalize_openai_response(response: Any) -> LLMResponse:
@@ -435,13 +383,29 @@ class LLMClient:
 
         content = "\n".join(text_parts) if text_parts else None
 
+        # Convert raw output items to plain dicts to avoid pydantic
+        # serialization issues when passing them back as input on the
+        # next iteration (openai SDK model_dump vs pydantic 2.9 compat).
+        # Also strip output-only fields (like "status") that the API
+        # rejects when sent back as input.
+        _OUTPUT_ONLY_FIELDS = {"status"}
+        raw_items: list[dict] = []
+        for item in response.output:
+            try:
+                d = json.loads(item.model_dump_json())
+                for key in _OUTPUT_ONLY_FIELDS:
+                    d.pop(key, None)
+                raw_items.append(d)
+            except Exception:
+                raw_items.append({"type": item.type})
+
         return LLMResponse(
             choices=[
                 Choice(
                     message=MessageContent(
                         content=content,
                         tool_calls=tool_calls,
-                        _raw_output_items=list(response.output),
+                        _raw_output_items=raw_items,
                     )
                 )
             ]

@@ -188,10 +188,10 @@ async def chat(
             GoogleDriveService,
             LLMClient,
         )
-        from app.utils.security import decrypt_token
+        from app.utils.security import get_valid_access_token
 
         llm_client = LLMClient(
-            anthropic_api_key=settings.ANTHROPIC_API_KEY,
+            # anthropic_api_key=settings.ANTHROPIC_API_KEY,  # TODO: Re-enable Anthropic
             openai_api_key=settings.OPENAI_API_KEY,
         )
         drive_service = GoogleDriveService()
@@ -223,9 +223,9 @@ async def chat(
             )
             folder_id = str(session.project_id)
 
-        # Decrypt the user's Google access token for Drive API calls
-        user_access_token = decrypt_token(
-            user.google_access_token, settings
+        # Get a valid (possibly refreshed) Google access token
+        user_access_token = await get_valid_access_token(
+            user, settings, db
         )
 
         # Build chat history from prior messages in this session
@@ -272,9 +272,8 @@ async def chat(
             exc_info=True,
         )
         answer_text = (
-            "The AI agent encountered an error. "
-            "Please check the server logs for details. "
-            f"Error: {type(exc).__name__}: {exc}"
+            "I'm sorry, something went wrong while processing your request. "
+            "Please try again."
         )
         citations = None
 
@@ -387,6 +386,12 @@ async def chat_stream(
         for msg in prior_messages
     ]
 
+    # Get a valid access token before committing (refresh needs DB write access)
+    from app.utils.security import get_valid_access_token as _get_token
+    logger.info("[CHAT-STREAM] Getting valid access token for user %s", user.id)
+    _user_access_token = await _get_token(user, settings, db)
+    logger.info("[CHAT-STREAM] Access token obtained, length=%d", len(_user_access_token) if _user_access_token else 0)
+
     # Commit user message + session before streaming
     await db.commit()
 
@@ -408,10 +413,8 @@ async def chat_stream(
                 GoogleDriveService,
                 LLMClient,
             )
-            from app.utils.security import decrypt_token
-
             llm_client = LLMClient(
-                anthropic_api_key=settings.ANTHROPIC_API_KEY,
+                # anthropic_api_key=settings.ANTHROPIC_API_KEY,  # TODO: Re-enable Anthropic
                 openai_api_key=settings.OPENAI_API_KEY,
             )
             drive_service = GoogleDriveService()
@@ -443,9 +446,7 @@ async def chat_stream(
                 )
                 folder_id = str(session_project_id)
 
-            user_access_token = decrypt_token(
-                user.google_access_token, settings
-            )
+            user_access_token = _user_access_token
             logger.info("[CHAT-STREAM] Starting agent.answer_streaming, folder_id=%s", folder_id)
 
             async for event_type, data in agent.answer_streaming(
@@ -463,6 +464,11 @@ async def chat_stream(
                     final_citations = data
                     yield f"event: citations\ndata: {json.dumps(data)}\n\n"
                 elif event_type == "done":
+                    logger.info(
+                        "[CHAT-STREAM] Streaming complete for session %s: answer_length=%d, citations=%s",
+                        session_id, len("".join(full_answer)),
+                        len(final_citations) if final_citations else 0,
+                    )
                     yield f"event: done\ndata: {json.dumps({})}\n\n"
 
         except Exception as exc:
@@ -472,8 +478,8 @@ async def chat_stream(
                 exc_info=True,
             )
             error_text = (
-                "The AI agent encountered an error. "
-                f"Error: {type(exc).__name__}: {exc}"
+                "I'm sorry, something went wrong while processing your request. "
+                "Please try again."
             )
             full_answer.append(error_text)
             yield f"event: delta\ndata: {json.dumps({'text': error_text})}\n\n"
@@ -572,3 +578,21 @@ async def list_messages(
         .order_by(Message.created_at.asc())
     )
     return result.scalars().all()
+
+
+# ---------------------------------------------------------------------------
+# DELETE /sessions/{session_id} – delete a chat session
+# ---------------------------------------------------------------------------
+@router.delete(
+    "/sessions/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_session(
+    session_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a chat session and all its messages (cascade)."""
+    session = await _verify_session_access(session_id, user, db)
+    await db.delete(session)
+    await db.flush()

@@ -16,7 +16,7 @@ from app.models.project import Project, ProjectStatus
 from app.models.user import User
 from app.schemas.project import ProjectResponse
 from app.services.google_drive import GoogleDriveService
-from app.utils.security import decrypt_token
+from app.utils.security import get_valid_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +92,8 @@ async def trigger_sync(
 
     # Count files via Google Drive API (lightweight, no Temporal needed) -----
     try:
-        user_access_token = decrypt_token(user.google_access_token, settings)
-        logger.info("[SYNC] Token decrypted (length=%d), counting files...", len(user_access_token))
+        user_access_token = await get_valid_access_token(user, settings, db)
+        logger.info("[SYNC] Token ready (length=%d), counting files...", len(user_access_token))
 
         drive_service = GoogleDriveService()
         file_count = await drive_service.count_files(

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
         env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     # Database
@@ -33,7 +34,7 @@ class Settings(BaseSettings):
     # OpenAI
     OPENAI_API_KEY: str
 
-    # Anthropic (optional)
+    # Anthropic (optional) — TODO: Re-enable Anthropic support — currently unused
     ANTHROPIC_API_KEY: Optional[str] = None
 
     # Temporal
@@ -43,7 +44,7 @@ class Settings(BaseSettings):
 
     # Security
     ENCRYPTION_KEY: str
-    SESSION_SECRET: str
+    FRONTEND_URL: str = "http://localhost:5173"
 
     # Azure Storage (optional)
     AZURE_STORAGE_CONNECTION_STRING: Optional[str] = None

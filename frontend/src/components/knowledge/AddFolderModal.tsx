@@ -237,7 +237,12 @@ export default function AddFolderModal({ onClose, onCreated }: AddFolderModalPro
               disabled={state !== "validated"}
               className="btn-primary flex-1"
             >
-              {state === "creating" ? "Adding..." : "Add Folder"}
+              {state === "creating" ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Adding...
+                </>
+              ) : "Add Folder"}
             </button>
           </div>
         </form>

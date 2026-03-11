@@ -38,7 +38,7 @@ export default function TopBar() {
   const { theme, toggleTheme } = useTheme();
 
   return (
-    <header className="flex items-center border-b border-[var(--border-subtle)] bg-surface-950 px-6">
+    <header className="flex items-center border-b border-[var(--border-subtle)] bg-surface-900 px-6">
       <TenexLogo iconSize={24} className="mr-8" />
 
       <nav className="flex gap-1">

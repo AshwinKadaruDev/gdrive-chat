@@ -33,12 +33,17 @@ vi.mock("@/hooks/useUnifiedChat", () => ({
     messages: [],
     sessionId: null,
     isLoading: false,
+    statusText: null,
     sendMessage: vi.fn(),
     selectSession: vi.fn(),
     startNewChat: vi.fn(),
   }),
   useUnifiedChatSessions: () => ({
     data: [],
+  }),
+  useDeleteChatSession: () => ({
+    mutate: vi.fn(),
+    isPending: false,
   }),
 }));
 
@@ -60,21 +65,20 @@ function renderWith(agentType: "RAG" | "DRIVE") {
 }
 
 describe("UnifiedChatContainer", () => {
-  it("renders project selector dropdown for RAG mode", () => {
+  it("renders folder picker for RAG mode", () => {
     renderWith("RAG");
-    expect(screen.getByText("Select a folder...")).toBeInTheDocument();
+    expect(screen.getByText("What would you like to chat about?")).toBeInTheDocument();
+    expect(screen.getByText("My Folder")).toBeInTheDocument();
   });
 
-  it("renders project selector dropdown for DRIVE mode", () => {
+  it("renders folder picker for DRIVE mode", () => {
     renderWith("DRIVE");
-    expect(screen.getByText("Select a folder...")).toBeInTheDocument();
+    expect(screen.getByText("What would you like to chat about?")).toBeInTheDocument();
   });
 
-  it("shows empty state when no folder is selected", () => {
+  it("shows add new folder option in picker", () => {
     renderWith("RAG");
-    expect(
-      screen.getByText("Select a folder to start chatting")
-    ).toBeInTheDocument();
+    expect(screen.getByText("Add new folder...")).toBeInTheDocument();
   });
 
   it("renders New Chat button in sidebar", () => {
@@ -95,8 +99,8 @@ describe("UnifiedChatContainer", () => {
     mockUseProjects.mockReturnValue({ data: [completedProject], isLoading: false });
   });
 
-  it("renders 'Add new folder' option in project selector dropdown", () => {
+  it("renders 'Add new folder' option in folder picker", () => {
     renderWith("DRIVE");
-    expect(screen.getByText("+ Add new folder...")).toBeInTheDocument();
+    expect(screen.getByText("Add new folder...")).toBeInTheDocument();
   });
 });

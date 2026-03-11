@@ -1,8 +1,15 @@
+import os
+import sys
 import uuid
 
 import pytest
 from unittest.mock import MagicMock
 from httpx import AsyncClient, ASGITransport
+
+# Add project root to sys.path so worker.* imports work in tests
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 from app.main import app
 from app.dependencies import get_current_user, get_settings

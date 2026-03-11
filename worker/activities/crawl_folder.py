@@ -6,6 +6,7 @@ import logging
 
 import httpx
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,14 @@ async def _crawl_recursive(
         logger.info("[CRAWL] Drive API request: folder_id=%s, query=%s", folder_id, params["q"])
         response = await client.get(DRIVE_FILES_URL, headers=headers, params=params)
         logger.info("[CRAWL] Drive API response: status=%d", response.status_code)
+
+        if response.status_code == 401:
+            logger.error("[CRAWL] Drive API auth error (401): %s", response.text[:500])
+            raise ApplicationError(
+                "Google Drive token expired",
+                type="TOKEN_EXPIRED",
+                non_retryable=True,
+            )
 
         if response.status_code != 200:
             logger.error("[CRAWL] Drive API error: status=%d body=%s", response.status_code, response.text[:500])

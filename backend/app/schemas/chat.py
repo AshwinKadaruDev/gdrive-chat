@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class ChatSessionCreate(BaseModel):
@@ -42,6 +42,11 @@ class MessageResponse(BaseModel):
     content: str
     citations: Optional[list[CitationSchema]] = None
     created_at: datetime
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def lowercase_role(cls, v: str) -> str:
+        return v.value.lower() if hasattr(v, "value") else v.lower()
 
 
 class ChatRequest(BaseModel):

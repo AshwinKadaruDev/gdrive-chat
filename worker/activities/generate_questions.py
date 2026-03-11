@@ -29,27 +29,23 @@ async def generate_questions(chunks: list[dict]) -> list[dict]:
         return chunks
 
     openai_key = os.environ.get("OPENAI_API_KEY", "")
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
     if not openai_key:
         raise RuntimeError("OPENAI_API_KEY environment variable is not set")
 
     oai_client = openai.AsyncOpenAI(api_key=openai_key)
 
-    # Decide which LLM to use for question generation
-    use_anthropic = bool(anthropic_key)
-    anthropic_client = None
-    if use_anthropic:
-        try:
-            import anthropic
-            anthropic_client = anthropic.AsyncAnthropic(api_key=anthropic_key)
-        except ImportError:
-            use_anthropic = False
+    # TODO: Re-enable Anthropic support for question generation
+    # anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    # use_anthropic = bool(anthropic_key)
+    # anthropic_client = None
+    # if use_anthropic:
+    #     import anthropic
+    #     anthropic_client = anthropic.AsyncAnthropic(api_key=anthropic_key)
 
     activity.logger.info(
-        "Generating questions for %d chunks (LLM=%s)",
+        "Generating questions for %d chunks (LLM=openai)",
         len(chunks),
-        "anthropic" if use_anthropic else "openai",
     )
 
     for i in range(0, len(chunks), QUESTION_BATCH_SIZE):
@@ -64,10 +60,7 @@ async def generate_questions(chunks: list[dict]) -> list[dict]:
 
             # Generate questions
             try:
-                if use_anthropic and anthropic_client:
-                    questions = await _generate_questions_anthropic(anthropic_client, text)
-                else:
-                    questions = await _generate_questions_openai(oai_client, text)
+                questions = await _generate_questions_openai(oai_client, text)
             except Exception as e:
                 activity.logger.warning("Question generation failed for chunk %s: %s", chunk.get("chunk_id"), e)
                 chunk["questions"] = []
@@ -118,21 +111,21 @@ async def _generate_questions_openai(client: openai.AsyncOpenAI, text: str) -> l
     return _parse_questions(raw)
 
 
-async def _generate_questions_anthropic(client, text: str) -> list[str]:
-    """Generate hypothetical questions using Anthropic Claude."""
-    truncated = text[:6000]
 
-    response = await client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=500,
-        system=QUESTION_SYSTEM_PROMPT,
-        messages=[
-            {"role": "user", "content": f"Generate questions for this text:\n\n{truncated}"},
-        ],
-    )
-
-    raw = response.content[0].text if response.content else ""
-    return _parse_questions(raw)
+# TODO: Re-enable Anthropic support for question generation
+# async def _generate_questions_anthropic(client, text: str) -> list[str]:
+#     """Generate hypothetical questions using Anthropic Claude."""
+#     truncated = text[:6000]
+#     response = await client.messages.create(
+#         model="claude-sonnet-4-20250514",
+#         max_tokens=500,
+#         system=QUESTION_SYSTEM_PROMPT,
+#         messages=[
+#             {"role": "user", "content": f"Generate questions for this text:\n\n{truncated}"},
+#         ],
+#     )
+#     raw = response.content[0].text if response.content else ""
+#     return _parse_questions(raw)
 
 
 def _parse_questions(raw: str) -> list[str]:
