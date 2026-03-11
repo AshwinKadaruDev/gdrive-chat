@@ -1,0 +1,90 @@
+# =============================================================================
+# Docker Compose for Talk-to-a-Folder (local development)
+# =============================================================================
+# Usage:
+#   docker compose up          # start all services
+#   docker compose up -d       # start in background
+#   docker compose down        # stop all services
+#   docker compose logs -f     # tail logs
+# =============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # PostgreSQL database
+  # --------------------------------------------------------------------------
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: talk_to_folder
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --------------------------------------------------------------------------
+  # Temporal server (auto-setup includes schema migrations)
+  # --------------------------------------------------------------------------
+  temporal:
+    image: temporalio/auto-setup:1.22
+    restart: unless-stopped
+    ports:
+      - "7233:7233"   # gRPC
+      - "8233:8233"   # Web UI
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=postgres
+      - POSTGRES_SEEDS=db
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # --------------------------------------------------------------------------
+  # Backend (FastAPI) + static frontend
+  # --------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/talk_to_folder
+      - TEMPORAL_HOST=temporal:7233
+    depends_on:
+      db:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+
+  # --------------------------------------------------------------------------
+  # Temporal worker
+  # --------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - TEMPORAL_HOST=temporal:7233
+    depends_on:
+      temporal:
+        condition: service_started
+
+volumes:
+  pgdata:
