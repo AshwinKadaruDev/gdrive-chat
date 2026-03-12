@@ -2,7 +2,7 @@
 
 import io
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch  # MagicMock used by mock_settings
 
 from app.services.tool_executor import (
     _download_spreadsheet_bytes,
@@ -41,15 +41,6 @@ def drive_service():
     svc.export_google_doc = AsyncMock()
     return svc
 
-
-@pytest.fixture
-def null_search():
-    return MagicMock()
-
-
-@pytest.fixture
-def null_embeddings():
-    return MagicMock()
 
 
 class TestDownloadSpreadsheetBytes:
@@ -101,7 +92,7 @@ class TestSpreadsheetOverviewGoogleSheet:
     """get_spreadsheet_overview should work with native Google Sheets."""
 
     async def test_overview_with_google_sheet(
-        self, drive_service, xlsx_bytes, null_search, null_embeddings
+        self, drive_service, xlsx_bytes
     ):
         drive_service.get_file_metadata.return_value = {
             "mimeType": GOOGLE_SHEET_MIME,
@@ -114,9 +105,7 @@ class TestSpreadsheetOverviewGoogleSheet:
             tool_args={"file_id": "sheet1"},
             project_id="folder1",
             access_token="token",
-            search_service=null_search,
             drive_service=drive_service,
-            embeddings_service=null_embeddings,
         )
 
         assert "My Sheet" in result
@@ -132,7 +121,7 @@ class TestReadSpreadsheetRowsGoogleSheet:
     """read_spreadsheet_rows should work with native Google Sheets."""
 
     async def test_reads_rows_from_google_sheet(
-        self, drive_service, xlsx_bytes, null_search, null_embeddings
+        self, drive_service, xlsx_bytes
     ):
         drive_service.get_file_metadata.return_value = {
             "mimeType": GOOGLE_SHEET_MIME,
@@ -151,16 +140,14 @@ class TestReadSpreadsheetRowsGoogleSheet:
             },
             project_id="folder1",
             access_token="token",
-            search_service=null_search,
             drive_service=drive_service,
-            embeddings_service=null_embeddings,
         )
 
         assert "Alice" in result
         assert "Bob" in result
 
     async def test_returns_citation_with_correct_location(
-        self, drive_service, xlsx_bytes, null_search, null_embeddings
+        self, drive_service, xlsx_bytes
     ):
         drive_service.get_file_metadata.return_value = {
             "mimeType": GOOGLE_SHEET_MIME,
@@ -179,9 +166,7 @@ class TestReadSpreadsheetRowsGoogleSheet:
             },
             project_id="folder1",
             access_token="token",
-            search_service=null_search,
             drive_service=drive_service,
-            embeddings_service=null_embeddings,
         )
 
         assert len(citations) == 1
@@ -194,7 +179,7 @@ class TestSearchSpreadsheetGoogleSheet:
     """search_spreadsheet should work with native Google Sheets."""
 
     async def test_searches_google_sheet(
-        self, drive_service, xlsx_bytes, null_search, null_embeddings
+        self, drive_service, xlsx_bytes
     ):
         drive_service.get_file_metadata.return_value = {
             "mimeType": GOOGLE_SHEET_MIME,
@@ -207,16 +192,14 @@ class TestSearchSpreadsheetGoogleSheet:
             tool_args={"file_id": "sheet1", "query": "Alice"},
             project_id="folder1",
             access_token="token",
-            search_service=null_search,
             drive_service=drive_service,
-            embeddings_service=null_embeddings,
         )
 
         assert "Alice" in result
         assert "1 matching" in result
 
     async def test_returns_citation(
-        self, drive_service, xlsx_bytes, null_search, null_embeddings
+        self, drive_service, xlsx_bytes
     ):
         drive_service.get_file_metadata.return_value = {
             "mimeType": GOOGLE_SHEET_MIME,
@@ -230,9 +213,7 @@ class TestSearchSpreadsheetGoogleSheet:
             tool_args={"file_id": "sheet1", "query": "Alice"},
             project_id="folder1",
             access_token="token",
-            search_service=null_search,
             drive_service=drive_service,
-            embeddings_service=null_embeddings,
         )
 
         assert len(citations) == 1
@@ -244,7 +225,7 @@ class TestColumnStatsGoogleSheet:
     """get_column_stats should work with native Google Sheets."""
 
     async def test_stats_from_google_sheet(
-        self, drive_service, xlsx_bytes, null_search, null_embeddings
+        self, drive_service, xlsx_bytes
     ):
         drive_service.get_file_metadata.return_value = {
             "mimeType": GOOGLE_SHEET_MIME,
@@ -261,9 +242,7 @@ class TestColumnStatsGoogleSheet:
             },
             project_id="folder1",
             access_token="token",
-            search_service=null_search,
             drive_service=drive_service,
-            embeddings_service=null_embeddings,
         )
 
         assert "Count: 2" in result
@@ -271,7 +250,7 @@ class TestColumnStatsGoogleSheet:
         assert "Mean: 15" in result
 
     async def test_returns_citation(
-        self, drive_service, xlsx_bytes, null_search, null_embeddings
+        self, drive_service, xlsx_bytes
     ):
         drive_service.get_file_metadata.return_value = {
             "mimeType": GOOGLE_SHEET_MIME,
@@ -289,12 +268,75 @@ class TestColumnStatsGoogleSheet:
             },
             project_id="folder1",
             access_token="token",
-            search_service=null_search,
             drive_service=drive_service,
-            embeddings_service=null_embeddings,
         )
 
         assert len(citations) == 1
         assert citations[0].file_name == "Data Sheet"
         assert citations[0].location == "Sheet: Sheet1, Column: Value"
         assert "Count: 2" in citations[0].snippet
+
+
+def _make_xlsx_many_rows(n_rows: int) -> bytes:
+    """Create an xlsx with n_rows of data (plus a header)."""
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["Name", "Value"])
+    for i in range(1, n_rows + 1):
+        ws.append([f"Row{i}", i])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+class TestSearchSpreadsheetRowCap:
+    """search_spreadsheet should stop after MAX_SPREADSHEET_SEARCH_ROWS."""
+
+    async def test_row_iteration_cap(self, drive_service):
+        xlsx_data = _make_xlsx_many_rows(100)
+        drive_service.get_file_metadata.return_value = {
+            "mimeType": XLSX_MIME,
+            "name": "big.xlsx",
+        }
+        drive_service.download_file.return_value = xlsx_data
+
+        # Monkeypatch MAX_SPREADSHEET_SEARCH_ROWS to a low value
+        mock_settings = MagicMock()
+        mock_settings.MAX_SPREADSHEET_SEARCH_ROWS = 5
+
+        with patch("app.dependencies.get_settings", return_value=mock_settings):
+            result, citations = await execute_tool(
+                tool_name="search_spreadsheet",
+                tool_args={"file_id": "file1", "query": "Row"},
+                project_id="folder1",
+                access_token="token",
+                drive_service=drive_service,
+            )
+
+        assert "Stopped after scanning 5 rows" in result
+
+
+class TestSpreadsheetSizeLimit:
+    """Spreadsheets exceeding MAX_SPREADSHEET_BYTES should be rejected."""
+
+    async def test_rejects_oversized_spreadsheet(self, drive_service):
+        drive_service.get_file_metadata.return_value = {
+            "mimeType": XLSX_MIME,
+            "name": "huge.xlsx",
+            "size": "100000000",  # 100 MB > 50 MB limit
+        }
+
+        result, citations = await execute_tool(
+            tool_name="get_spreadsheet_overview",
+            tool_args={"file_id": "huge1"},
+            project_id="folder1",
+            access_token="token",
+            drive_service=drive_service,
+        )
+
+        assert "too large" in result
+        assert citations == []
+        drive_service.download_file.assert_not_called()

@@ -6,6 +6,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,17 +62,26 @@ async def trigger_sync(
     """
     Trigger a folder sync for the given project.
 
-    1. Mark the project as ``SYNCING``.
-    2. Attempt to start a Temporal workflow for background processing.
-    3. If Temporal is unavailable, fall back to an inline placeholder that
-       keeps the app functional during development.
+    Marks the project as ``SYNCING``, counts files via the Google Drive API,
+    then marks it ``COMPLETED``.
     """
     logger.info(
         "[SYNC] trigger_sync called for project_id=%s by user=%s",
         project_id, user.id,
     )
 
-    project = await _get_user_project(project_id, user, db)
+    # Use row lock to prevent race conditions on sync status check
+    result = await db.execute(
+        select(Project)
+        .where(Project.id == project_id, Project.user_id == user.id)
+        .with_for_update()
+    )
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
     logger.info(
         "[SYNC] Project found: name=%s, folder_id=%s, current_status=%s",
         project.name, project.gdrive_folder_id, project.sync_status,
@@ -90,7 +100,7 @@ async def trigger_sync(
     await db.flush()
     logger.info("[SYNC] Marked project %s as SYNCING", project_id)
 
-    # Count files via Google Drive API (lightweight, no Temporal needed) -----
+    # Count files via Google Drive API ----------------------------------------
     try:
         user_access_token = await get_valid_access_token(user, settings, db)
         logger.info("[SYNC] Token ready (length=%d), counting files...", len(user_access_token))
@@ -111,16 +121,34 @@ async def trigger_sync(
             "[SYNC] Project %s synced: files_total=%d, status=COMPLETED",
             project_id, file_count,
         )
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        if code == 401:
+            error_msg = "Google Drive authorization expired. Please sign in again."
+        elif code == 403:
+            error_msg = "Permission denied — check that the folder is shared with your account."
+        else:
+            error_msg = f"Google Drive API error (HTTP {code})."
+        logger.error("[SYNC] FAILED for project %s: %s", project_id, error_msg, exc_info=True)
+        project.sync_status = ProjectStatus.FAILED
+        project.sync_error = error_msg
+        await db.flush()
+    except httpx.TimeoutException:
+        error_msg = "Timed out connecting to Google Drive. Please try again."
+        logger.error("[SYNC] FAILED for project %s: %s", project_id, error_msg)
+        project.sync_status = ProjectStatus.FAILED
+        project.sync_error = error_msg
+        await db.flush()
     except Exception as exc:
+        error_msg = f"Sync failed: {type(exc).__name__}: {exc}"
         logger.error(
-            "[SYNC] FAILED to count files for project %s: %s: %s",
-            project_id, type(exc).__name__, exc,
+            "[SYNC] FAILED for project %s: %s",
+            project_id, error_msg,
             exc_info=True,
         )
         project.sync_status = ProjectStatus.FAILED
-        project.sync_error = str(exc)
+        project.sync_error = error_msg
         await db.flush()
-        logger.warning("[SYNC] Marked project %s as FAILED", project_id)
 
     return project
 
@@ -135,8 +163,7 @@ async def get_sync_status(
     db: AsyncSession = Depends(get_db),
 ):
     """Return the current sync status for a project."""
-    # Refresh from the DB so we get the latest status (e.g. if Temporal
-    # workers have updated it in the background).
+    # Refresh from the DB so we get the latest status.
     project = await _get_user_project(project_id, user, db)
     logger.info(
         "[SYNC-STATUS] project=%s status=%s files=%d/%d",

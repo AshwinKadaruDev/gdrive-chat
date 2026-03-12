@@ -1,6 +1,4 @@
-"""Chat router – converse with a project's indexed folder contents."""
-
-from __future__ import annotations
+"""Chat router – converse with a Google Drive folder's contents."""
 
 import json
 import logging
@@ -8,12 +6,14 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.dependencies import get_current_user, get_db, get_settings
-from app.models.chat import AgentType, ChatSession
+from app.models.chat import ChatSession
 from app.models.message import Message, MessageRole
 from app.models.project import Project
 from app.models.user import User
@@ -24,19 +24,23 @@ from app.schemas.chat import (
     MessageResponse,
 )
 from app.services import (
-    DRIVE_AGENT_TOOLS,
-    DRIVE_SYSTEM_PROMPT,
-    AzureSearchService,
-    EmbeddingsService,
     FolderAgent,
     GoogleDriveService,
     LLMClient,
 )
-from app.utils.security import get_valid_access_token
+from app.services.google_drive import DriveAuthError, DrivePermissionError
+from app.utils.security import SESSION_COOKIE_NAME, get_valid_access_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _rate_limit_key(request: Request) -> str:
+    return request.cookies.get(SESSION_COOKIE_NAME, get_remote_address(request))
+
+
+limiter = Limiter(key_func=_rate_limit_key)
 
 
 # ---------------------------------------------------------------------------
@@ -68,15 +72,18 @@ async def _verify_session_access(
     session_id: uuid.UUID,
     user: User,
     db: AsyncSession,
+    lock: bool = False,
 ) -> ChatSession:
     """Return the chat session if the user owns it, else 404.
 
-    For RAG sessions, ownership is verified through the parent project.
-    For Drive sessions (no project), ownership is verified via user_id.
+    Ownership is verified via user_id, or through the parent project
+    for legacy sessions.  When *lock* is True, a ``FOR UPDATE`` row
+    lock is acquired.
     """
-    result = await db.execute(
-        select(ChatSession).where(ChatSession.id == session_id)
-    )
+    stmt = select(ChatSession).where(ChatSession.id == session_id)
+    if lock:
+        stmt = stmt.with_for_update()
+    result = await db.execute(stmt)
     session = result.scalar_one_or_none()
     if session is None:
         raise HTTPException(
@@ -93,7 +100,7 @@ async def _verify_session_access(
             )
         return session
 
-    # RAG sessions: verify via project ownership
+    # Legacy sessions with project_id: verify via project ownership
     project_result = await db.execute(
         select(Project).where(
             Project.id == session.project_id,
@@ -112,8 +119,10 @@ async def _verify_session_access(
 # POST / – main chat endpoint
 # ---------------------------------------------------------------------------
 @router.post("/", response_model=ChatResponse, status_code=status.HTTP_200_OK)
+@limiter.limit("10/minute")
 async def chat(
     body: ChatRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -124,56 +133,32 @@ async def chat(
     * If ``session_id`` is provided, the message is appended to an existing
       chat session.
     * If ``session_id`` is ``None``, a new ``ChatSession`` is created
-      automatically.  The caller must include a ``project_id`` (for RAG)
-      or ``gdrive_folder_id`` (for Drive) in the request body.
+      automatically.  The caller must include a ``gdrive_folder_id``.
     """
 
-    is_drive = body.agent_type.lower() == "drive"
     logger.info(
-        "[CHAT] New message: agent_type=%s, session_id=%s, folder_id=%s, msg=%r",
-        body.agent_type, body.session_id, body.gdrive_folder_id, body.message[:80],
+        "[CHAT] New message: session_id=%s, folder_id=%s, msg=%r",
+        body.session_id, body.gdrive_folder_id, body.message[:80],
     )
 
     # Resolve or create the chat session ------------------------------------
     if body.session_id is not None:
-        session = await _verify_session_access(body.session_id, user, db)
+        session = await _verify_session_access(body.session_id, user, db, lock=True)
         logger.info("[CHAT] Using existing session %s", session.id)
     else:
-        if is_drive:
-            # Drive Chat — requires gdrive_folder_id
-            if not body.gdrive_folder_id:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="gdrive_folder_id is required for Drive Chat sessions.",
-                )
-            session = ChatSession(
-                agent_type=AgentType.DRIVE,
-                user_id=user.id,
-                gdrive_folder_id=body.gdrive_folder_id,
-                title=body.message[:120],
+        if not body.gdrive_folder_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="gdrive_folder_id is required to start a new chat session.",
             )
-        else:
-            # RAG Chat — requires project_id
-            project_id = body.project_id
-            if project_id is None:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=(
-                        "Either session_id or project_id must be provided. "
-                        "Pass session_id to continue an existing conversation, "
-                        "or project_id to start a new one."
-                    ),
-                )
-            await _verify_project_access(project_id, user, db)
-            session = ChatSession(
-                project_id=project_id,
-                user_id=user.id,
-                agent_type=AgentType.RAG,
-                title=body.message[:120],
-            )
+        session = ChatSession(
+            user_id=user.id,
+            gdrive_folder_id=body.gdrive_folder_id,
+            title=body.message[:120],
+        )
         db.add(session)
         await db.flush()
-        logger.info("[CHAT] Created new session %s (type=%s)", session.id, session.agent_type)
+        logger.info("[CHAT] Created new session %s", session.id)
 
     # Persist the user message ----------------------------------------------
     user_message = Message(
@@ -190,53 +175,31 @@ async def chat(
 
     try:
         llm_client = LLMClient(
-            # anthropic_api_key=settings.ANTHROPIC_API_KEY,  # TODO: Re-enable Anthropic
             openai_api_key=settings.OPENAI_API_KEY,
         )
         drive_service = GoogleDriveService()
-
-        if is_drive or session.agent_type == AgentType.DRIVE:
-            # Drive agent — no search/embeddings services needed
-            agent = FolderAgent(
-                llm_client=llm_client,
-                drive_service=drive_service,
-                tools=DRIVE_AGENT_TOOLS,
-                system_prompt=DRIVE_SYSTEM_PROMPT,
-            )
-            folder_id = session.gdrive_folder_id or body.gdrive_folder_id or ""
-        else:
-            # RAG agent — needs Azure Search + embeddings
-            search_service = AzureSearchService(
-                endpoint=settings.AZURE_SEARCH_ENDPOINT,
-                api_key=settings.AZURE_SEARCH_API_KEY,
-                index_name=settings.AZURE_SEARCH_INDEX_NAME,
-            )
-            embeddings_service = EmbeddingsService(
-                api_key=settings.OPENAI_API_KEY,
-            )
-            agent = FolderAgent(
-                llm_client=llm_client,
-                drive_service=drive_service,
-                search_service=search_service,
-                embeddings_service=embeddings_service,
-            )
-            folder_id = str(session.project_id)
+        agent = FolderAgent(
+            llm_client=llm_client,
+            drive_service=drive_service,
+        )
+        folder_id = session.gdrive_folder_id or body.gdrive_folder_id or ""
 
         # Get a valid (possibly refreshed) Google access token
         user_access_token = await get_valid_access_token(
             user, settings, db
         )
 
-        # Build chat history from prior messages in this session
+        # Build chat history from prior messages in this session (bounded)
         history_result = await db.execute(
             select(Message)
             .where(
                 Message.chat_session_id == session.id,
                 Message.id != user_message.id,
             )
-            .order_by(Message.created_at.asc())
+            .order_by(Message.created_at.desc())
+            .limit(settings.MAX_CHAT_HISTORY_MESSAGES)
         )
-        prior_messages = history_result.scalars().all()
+        prior_messages = list(reversed(history_result.scalars().all()))
         chat_history = [
             {"role": msg.role.value.lower(), "content": msg.content}
             for msg in prior_messages
@@ -247,6 +210,7 @@ async def chat(
             project_id=folder_id,
             user_access_token=user_access_token,
             chat_history=chat_history if chat_history else None,
+            session_id=str(session.id),
         )
         answer_text = agent_result.content
         citations = (
@@ -275,12 +239,27 @@ async def chat(
         db.add(assistant_message)
         await db.flush()
 
+    except DriveAuthError as exc:
+        logger.warning("[CHAT] Drive auth error for session %s: %s", session.id, exc)
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Your Google Drive authorization has expired. Please sign in again.",
+        )
+    except DrivePermissionError as exc:
+        logger.warning("[CHAT] Drive permission error for session %s: %s", session.id, exc)
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to access this Drive resource.",
+        )
     except Exception as exc:
         logger.error(
             "[CHAT] Agent failed for session %s: %s: %s",
             session.id, type(exc).__name__, exc,
             exc_info=True,
         )
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while processing your request.",
@@ -302,8 +281,10 @@ async def chat(
 # POST /stream – SSE streaming chat endpoint
 # ---------------------------------------------------------------------------
 @router.post("/stream")
+@limiter.limit("10/minute")
 async def chat_stream(
     body: ChatRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -315,43 +296,26 @@ async def chat_stream(
     The agent's tool-calling loop runs server-side; only status updates
     and the final answer tokens are streamed to the client.
     """
-    is_drive = body.agent_type.lower() == "drive"
     logger.info(
-        "[CHAT-STREAM] New streaming message: agent_type=%s, session_id=%s, folder_id=%s, msg=%r",
-        body.agent_type, body.session_id, body.gdrive_folder_id, body.message[:80],
+        "[CHAT-STREAM] New streaming message: session_id=%s, folder_id=%s, msg=%r",
+        body.session_id, body.gdrive_folder_id, body.message[:80],
     )
 
     # Resolve or create the chat session
     if body.session_id is not None:
-        session = await _verify_session_access(body.session_id, user, db)
+        session = await _verify_session_access(body.session_id, user, db, lock=True)
         logger.info("[CHAT-STREAM] Using existing session %s", session.id)
     else:
-        if is_drive:
-            if not body.gdrive_folder_id:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="gdrive_folder_id is required for Drive Chat sessions.",
-                )
-            session = ChatSession(
-                agent_type=AgentType.DRIVE,
-                user_id=user.id,
-                gdrive_folder_id=body.gdrive_folder_id,
-                title=body.message[:120],
+        if not body.gdrive_folder_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="gdrive_folder_id is required to start a new chat session.",
             )
-        else:
-            project_id = body.project_id
-            if project_id is None:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Either session_id or project_id must be provided.",
-                )
-            await _verify_project_access(project_id, user, db)
-            session = ChatSession(
-                project_id=project_id,
-                user_id=user.id,
-                agent_type=AgentType.RAG,
-                title=body.message[:120],
-            )
+        session = ChatSession(
+            user_id=user.id,
+            gdrive_folder_id=body.gdrive_folder_id,
+            title=body.message[:120],
+        )
         db.add(session)
         await db.flush()
 
@@ -366,20 +330,19 @@ async def chat_stream(
 
     # Capture IDs before the streaming generator (session scope may close)
     session_id = session.id
-    session_agent_type = session.agent_type
     session_gdrive_folder_id = session.gdrive_folder_id
-    session_project_id = session.project_id
 
-    # Build chat history
+    # Build chat history (bounded)
     history_result = await db.execute(
         select(Message)
         .where(
             Message.chat_session_id == session_id,
             Message.id != user_message.id,
         )
-        .order_by(Message.created_at.asc())
+        .order_by(Message.created_at.desc())
+        .limit(settings.MAX_CHAT_HISTORY_MESSAGES)
     )
-    prior_messages = history_result.scalars().all()
+    prior_messages = list(reversed(history_result.scalars().all()))
     chat_history = [
         {"role": msg.role.value.lower(), "content": msg.content}
         for msg in prior_messages
@@ -426,37 +389,14 @@ async def chat_stream(
 
         try:
             llm_client = LLMClient(
-                # anthropic_api_key=settings.ANTHROPIC_API_KEY,  # TODO: Re-enable Anthropic
                 openai_api_key=settings.OPENAI_API_KEY,
             )
             drive_service = GoogleDriveService()
-
-            if is_drive or session_agent_type == AgentType.DRIVE:
-                logger.info("[CHAT-STREAM] Setting up DRIVE agent, folder_id=%s", session_gdrive_folder_id)
-                agent = FolderAgent(
-                    llm_client=llm_client,
-                    drive_service=drive_service,
-                    tools=DRIVE_AGENT_TOOLS,
-                    system_prompt=DRIVE_SYSTEM_PROMPT,
-                )
-                folder_id = session_gdrive_folder_id or body.gdrive_folder_id or ""
-            else:
-                logger.info("[CHAT-STREAM] Setting up RAG agent, project_id=%s", session_project_id)
-                search_service = AzureSearchService(
-                    endpoint=settings.AZURE_SEARCH_ENDPOINT,
-                    api_key=settings.AZURE_SEARCH_API_KEY,
-                    index_name=settings.AZURE_SEARCH_INDEX_NAME,
-                )
-                embeddings_service = EmbeddingsService(
-                    api_key=settings.OPENAI_API_KEY,
-                )
-                agent = FolderAgent(
-                    llm_client=llm_client,
-                    drive_service=drive_service,
-                    search_service=search_service,
-                    embeddings_service=embeddings_service,
-                )
-                folder_id = str(session_project_id)
+            agent = FolderAgent(
+                llm_client=llm_client,
+                drive_service=drive_service,
+            )
+            folder_id = session_gdrive_folder_id or body.gdrive_folder_id or ""
 
             user_access_token = _user_access_token
             logger.info("[CHAT-STREAM] Starting agent.answer_streaming, folder_id=%s", folder_id)
@@ -466,6 +406,7 @@ async def chat_stream(
                 project_id=folder_id,
                 user_access_token=user_access_token,
                 chat_history=chat_history if chat_history else None,
+                session_id=str(session_id),
             ):
                 if event_type == "status":
                     yield f"event: status\ndata: {json.dumps({'text': data})}\n\n"
@@ -488,6 +429,22 @@ async def chat_stream(
                     )
                     yield f"event: done\ndata: {json.dumps({})}\n\n"
 
+        except DriveAuthError as exc:
+            logger.warning("[CHAT-STREAM] Drive auth error for session %s: %s", session_id, exc)
+            error_text = "Your Google Drive authorization has expired. Please sign in again."
+            full_answer.append(error_text)
+            yield f"event: delta\ndata: {json.dumps({'text': error_text})}\n\n"
+            yield f"event: citations\ndata: []\n\n"
+            await _save_streaming_message(session_id, "".join(full_answer), None)
+            yield f"event: done\ndata: {json.dumps({})}\n\n"
+        except DrivePermissionError as exc:
+            logger.warning("[CHAT-STREAM] Drive permission error for session %s: %s", session_id, exc)
+            error_text = "You don't have permission to access this Drive resource."
+            full_answer.append(error_text)
+            yield f"event: delta\ndata: {json.dumps({'text': error_text})}\n\n"
+            yield f"event: citations\ndata: []\n\n"
+            await _save_streaming_message(session_id, "".join(full_answer), None)
+            yield f"event: done\ndata: {json.dumps({})}\n\n"
         except Exception as exc:
             logger.error(
                 "[CHAT-STREAM] Agent failed for session %s: %s: %s",
@@ -501,10 +458,7 @@ async def chat_stream(
             full_answer.append(error_text)
             yield f"event: delta\ndata: {json.dumps({'text': error_text})}\n\n"
             yield f"event: citations\ndata: []\n\n"
-            # Persist the error message too
-            await _save_streaming_message(
-                session_id, "".join(full_answer), None
-            )
+            await _save_streaming_message(session_id, "".join(full_answer), None)
             yield f"event: done\ndata: {json.dumps({})}\n\n"
 
     return StreamingResponse(
@@ -531,13 +485,10 @@ async def list_drive_sessions(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ):
-    """Return all Drive Chat sessions for the current user, newest first."""
+    """Return all chat sessions for the current user, newest first."""
     result = await db.execute(
         select(ChatSession)
-        .where(
-            ChatSession.agent_type == AgentType.DRIVE,
-            ChatSession.user_id == user.id,
-        )
+        .where(ChatSession.user_id == user.id)
         .order_by(ChatSession.created_at.desc())
         .limit(limit)
         .offset(offset)

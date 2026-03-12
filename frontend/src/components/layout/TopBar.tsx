@@ -1,14 +1,13 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
-import { BookOpen, Search, Zap, LogOut, Sun, Moon } from "lucide-react";
+import { BookOpen, MessageSquare, LogOut, Sun, Moon } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
 import TenexLogo from "@/components/TenexLogo";
 
 const tabs = [
   { to: "/knowledge", label: "Knowledge", icon: BookOpen },
-  { to: "/deep-search", label: "Deep Search", icon: Search },
-  { to: "/quick-search", label: "Quick Search", icon: Zap },
+  { to: "/chat", label: "Chat", icon: MessageSquare },
 ];
 
 function UserAvatar({ name, pictureUrl }: { name: string; pictureUrl: string | null }) {

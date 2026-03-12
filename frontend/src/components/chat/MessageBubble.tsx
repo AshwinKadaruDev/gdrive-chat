@@ -2,10 +2,17 @@ import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import CitationTooltip from "./CitationTooltip";
 import TenexLogo from "@/components/TenexLogo";
 import { useAuth } from "@/hooks/useAuth";
 import type { Message, Citation } from "@/types";
+
+const citationSanitizeSchema = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames ?? []), "sup"],
+  attributes: { ...defaultSchema.attributes, sup: ["data-cite"] },
+};
 
 interface MessageBubbleProps {
   message: Message;
@@ -170,7 +177,7 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
     return (
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={hasCitations ? [rehypeRaw] : []}
+        rehypePlugins={hasCitations ? [rehypeRaw, [rehypeSanitize, citationSanitizeSchema]] : []}
         components={components}
       >
         {source}

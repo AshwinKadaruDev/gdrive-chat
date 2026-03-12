@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ChatSessionCreate(BaseModel):
@@ -14,7 +14,6 @@ class ChatSessionResponse(BaseModel):
 
     id: uuid.UUID
     project_id: Optional[uuid.UUID] = None
-    agent_type: str = "RAG"
     gdrive_folder_id: Optional[str] = None
     title: Optional[str] = None
     created_at: datetime
@@ -38,7 +37,7 @@ class MessageResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    role: str
+    role: Literal["user", "assistant"]
     content: str
     citations: Optional[list[CitationSchema]] = None
     created_at: datetime
@@ -50,10 +49,9 @@ class MessageResponse(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(..., min_length=1, max_length=32000)
     session_id: Optional[uuid.UUID] = None
     project_id: Optional[uuid.UUID] = None
-    agent_type: str = "rag"
     gdrive_folder_id: Optional[str] = None
 
 

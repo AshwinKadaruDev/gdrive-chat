@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Component, useState, useEffect, useRef } from "react";
 import { useProjects } from "@/hooks/useProjects";
 import {
   useUnifiedChat,
@@ -17,19 +17,42 @@ import {
   Trash2,
   Search,
 } from "lucide-react";
-import type { Project, AgentType, ChatSession } from "@/types";
+import type { Project, ChatSession } from "@/types";
 
-interface Props {
-  agentType: AgentType;
+class ChatErrorBoundary extends Component<
+  { children: React.ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-1 items-center justify-center p-6">
+          <div className="text-center">
+            <p className="text-sm text-red-400">
+              Something went wrong displaying messages.
+            </p>
+            <p className="mt-1 text-xs text-surface-100/60">
+              Try starting a new chat or refreshing the page.
+            </p>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
-export default function UnifiedChatContainer({ agentType }: Props) {
+export default function UnifiedChatContainer() {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [folderSearch, setFolderSearch] = useState("");
-  const { data: projects, isLoading: projectsLoading } = useProjects();
+  const addFolderBtnRef = useRef<HTMLButtonElement>(null);
+  const { data: projects, isLoading: projectsLoading, error: projectsError } = useProjects();
 
-  const projectId = selectedProject?.id ?? null;
   const folderId = selectedProject?.gdrive_folder_id ?? null;
 
   const {
@@ -40,15 +63,12 @@ export default function UnifiedChatContainer({ agentType }: Props) {
     sendMessage,
     selectSession,
     startNewChat,
-  } = useUnifiedChat({ agentType, projectId, folderId });
+  } = useUnifiedChat({ folderId });
 
-  const { data: sessions } = useUnifiedChatSessions(agentType, projectId);
-  const deleteMutation = useDeleteChatSession(agentType, projectId);
+  const { data: sessions } = useUnifiedChatSessions();
+  const deleteMutation = useDeleteChatSession();
 
-  const qualifiedProjects =
-    agentType === "RAG"
-      ? (projects?.filter((p) => p.sync_status === "COMPLETED") ?? [])
-      : (projects?.filter((p) => !!p.gdrive_folder_id) ?? []);
+  const qualifiedProjects = projects?.filter((p) => !!p.gdrive_folder_id) ?? [];
 
   // Show all sessions in sidebar (folder indicator tells user which folder)
   const allSessions: ChatSession[] = sessions ?? [];
@@ -56,20 +76,23 @@ export default function UnifiedChatContainer({ agentType }: Props) {
   // Lock folder selector once a conversation is active
   const folderLocked = sessionId !== null;
 
-  // Lookup maps for folder names in the sidebar
+  // Listen for session-expired events and reset chat state
+  useEffect(() => {
+    const handler = () => {
+      startNewChat();
+    };
+    window.addEventListener("auth:session-expired", handler);
+    return () => window.removeEventListener("auth:session-expired", handler);
+  }, [startNewChat]);
+
+  // Lookup map for folder names in the sidebar
   const projectsByFolderId = new Map(
     (projects ?? []).map((p) => [p.gdrive_folder_id, p])
-  );
-  const projectsById = new Map(
-    (projects ?? []).map((p) => [p.id, p])
   );
 
   function handleSelectSession(session: ChatSession) {
     // Auto-select the folder this conversation belongs to
-    const project =
-      agentType === "DRIVE"
-        ? projectsByFolderId.get(session.gdrive_folder_id ?? "")
-        : projectsById.get(session.project_id ?? "");
+    const project = projectsByFolderId.get(session.gdrive_folder_id ?? "");
     if (project) setSelectedProject(project);
     selectSession(session.id);
   }
@@ -88,10 +111,7 @@ export default function UnifiedChatContainer({ agentType }: Props) {
   }
 
   function getFolderName(session: ChatSession): string | undefined {
-    if (agentType === "DRIVE") {
-      return projectsByFolderId.get(session.gdrive_folder_id ?? "")?.name;
-    }
-    return projectsById.get(session.project_id ?? "")?.name;
+    return projectsByFolderId.get(session.gdrive_folder_id ?? "")?.name;
   }
 
   if (projectsLoading) {
@@ -117,12 +137,13 @@ export default function UnifiedChatContainer({ agentType }: Props) {
       <div className="flex h-full flex-col items-center justify-center px-6 text-center">
         <MessageSquare className="h-12 w-12 text-surface-700" />
         <h3 className="mt-4 text-base font-medium text-surface-100">
-          No folders connected
+          {projectsError ? "Failed to load folders" : "No folders connected"}
         </h3>
         <p className="mt-2 max-w-sm text-sm text-surface-100/60">
           Connect a Google Drive folder to start searching your documents.
         </p>
         <button
+          ref={addFolderBtnRef}
           onClick={() => setShowAddModal(true)}
           className="btn-primary mt-6"
         >
@@ -133,6 +154,7 @@ export default function UnifiedChatContainer({ agentType }: Props) {
           <AddFolderModal
             onClose={() => setShowAddModal(false)}
             onCreated={(project) => setSelectedProject(project)}
+            triggerRef={addFolderBtnRef}
           />
         )}
       </div>
@@ -255,6 +277,7 @@ export default function UnifiedChatContainer({ agentType }: Props) {
               </div>
 
               <button
+                ref={addFolderBtnRef}
                 onClick={() => setShowAddModal(true)}
                 className="flex items-center gap-3 rounded-xl border border-dashed border-[var(--border-subtle)] px-4 py-3 text-left transition-colors hover:border-brand-500/40 hover:bg-surface-800/40"
               >
@@ -278,7 +301,9 @@ export default function UnifiedChatContainer({ agentType }: Props) {
               />
             </div>
 
-            <MessageList messages={messages} isLoading={chatLoading} statusText={statusText} />
+            <ChatErrorBoundary>
+              <MessageList messages={messages} isLoading={chatLoading} statusText={statusText} />
+            </ChatErrorBoundary>
             <ChatInput
               onSend={sendMessage}
               isLoading={chatLoading}
@@ -292,6 +317,7 @@ export default function UnifiedChatContainer({ agentType }: Props) {
         <AddFolderModal
           onClose={() => setShowAddModal(false)}
           onCreated={(project) => setSelectedProject(project)}
+          triggerRef={addFolderBtnRef}
         />
       )}
     </div>

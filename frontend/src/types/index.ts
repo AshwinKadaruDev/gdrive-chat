@@ -21,14 +21,12 @@ export interface Project {
 export type SyncStatus =
   | "PENDING"
   | "SYNCING"
-  | "PROCESSING"
   | "COMPLETED"
   | "FAILED";
 
 export interface ChatSession {
   id: string;
   project_id?: string | null;
-  agent_type?: "RAG" | "DRIVE";
   gdrive_folder_id?: string | null;
   title: string | null;
   created_at: string;
@@ -52,4 +50,3 @@ export interface Citation {
   snippet: string;
 }
 
-export type AgentType = "RAG" | "DRIVE";

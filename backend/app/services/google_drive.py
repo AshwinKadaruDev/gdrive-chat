@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 
 import httpx
 
@@ -13,6 +14,41 @@ class DriveValidationError(Exception):
         self.code = code
         self.message = message
         super().__init__(message)
+
+
+class DriveAuthError(Exception):
+    """Google Drive API 401 — token expired or invalid."""
+    pass
+
+
+class DrivePermissionError(Exception):
+    """Google Drive API 403 — access denied."""
+    pass
+
+
+_ALLOWED_MIME_PREFIXES = ("application/", "text/", "image/", "video/", "audio/")
+_DRIVE_QUERY_UNSAFE = re.compile(r"['\(\)]")
+
+
+def _validate_mime_filter(ft: str) -> str:
+    """Validate a MIME type filter before interpolating into a Drive query."""
+    if not any(ft.startswith(p) for p in _ALLOWED_MIME_PREFIXES):
+        raise ValueError(f"Invalid MIME type filter: {ft!r}")
+    if _DRIVE_QUERY_UNSAFE.search(ft):
+        raise ValueError(f"Unsafe characters in MIME type filter: {ft!r}")
+    return ft
+
+
+def _check_drive_response(response: httpx.Response) -> None:
+    """Raise typed exceptions for 401/403 Drive responses."""
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 401:
+            raise DriveAuthError("Token may be expired") from exc
+        if exc.response.status_code == 403:
+            raise DrivePermissionError("Insufficient permissions") from exc
+        raise
 
 
 class GoogleDriveService:
@@ -90,7 +126,7 @@ class GoogleDriveService:
             )
             if response.status_code != 200:
                 logger.error("[DRIVE] API error: %s", response.text[:500])
-            response.raise_for_status()
+            _check_drive_response(response)
             data = response.json()
 
             files = data.get("files", [])
@@ -119,7 +155,7 @@ class GoogleDriveService:
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(url, headers=headers, params=params)
-            response.raise_for_status()
+            _check_drive_response(response)
             return response.content
 
     async def export_google_doc(
@@ -140,7 +176,7 @@ class GoogleDriveService:
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(url, headers=headers, params=params)
-            response.raise_for_status()
+            _check_drive_response(response)
             return response.content if as_bytes else response.text
 
     async def search_files(
@@ -173,6 +209,7 @@ class GoogleDriveService:
         ]
         logger.info("[DRIVE] search_files: searching across %d folders", len(folder_ids))
 
+        # escaped_query is safe for interpolation into the Drive query string
         escaped_query = query.replace("\\", "\\\\").replace("'", "\\'")
 
         # Google Drive API has query length limits; batch into groups of 30
@@ -197,7 +234,8 @@ class GoogleDriveService:
 
             if file_types:
                 mime_clauses = [
-                    f"mimeType contains '{ft}'" for ft in file_types
+                    f"mimeType contains '{_validate_mime_filter(ft)}'"
+                    for ft in file_types
                 ]
                 q_parts.append(f"({' or '.join(mime_clauses)})")
 
@@ -213,7 +251,7 @@ class GoogleDriveService:
                 if page_token:
                     params["pageToken"] = page_token
 
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.get(
                         f"{self.BASE_URL}/files",
                         headers=headers,
@@ -221,7 +259,7 @@ class GoogleDriveService:
                     )
                     if response.status_code != 200:
                         logger.error("[DRIVE] search_files API error: status=%d body=%s", response.status_code, response.text[:500])
-                    response.raise_for_status()
+                    _check_drive_response(response)
                     data = response.json()
 
                 batch = data.get("files", [])
@@ -248,18 +286,23 @@ class GoogleDriveService:
         """
         try:
             metadata = await self.get_file_metadata(folder_id, access_token)
+        except DriveAuthError:
+            raise DriveValidationError(
+                "drive_error",
+                "Something went wrong connecting to Google Drive. Please try again.",
+            )
+        except DrivePermissionError:
+            raise DriveValidationError(
+                "no_access",
+                "You don't have access to this folder. Ask the owner to "
+                "share it with your Google account.",
+            )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 raise DriveValidationError(
                     "not_found",
                     "We couldn't find that folder. Double-check the URL and "
                     "make sure the folder hasn't been deleted.",
-                )
-            if exc.response.status_code == 403:
-                raise DriveValidationError(
-                    "no_access",
-                    "You don't have access to this folder. Ask the owner to "
-                    "share it with your Google account.",
                 )
             raise DriveValidationError(
                 "drive_error",
@@ -288,7 +331,7 @@ class GoogleDriveService:
             "fields": "id,name,mimeType,size,modifiedTime,parents,webViewLink,description",
         }
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(url, headers=headers, params=params)
-            response.raise_for_status()
+            _check_drive_response(response)
             return response.json()

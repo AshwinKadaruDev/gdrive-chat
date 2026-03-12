@@ -6,6 +6,7 @@ import type { Project } from "@/types";
 interface AddFolderModalProps {
   onClose: () => void;
   onCreated?: (project: Project) => void;
+  triggerRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 const GDRIVE_URL_PATTERN =
@@ -46,7 +47,7 @@ function getErrorMessage(error: unknown): string {
   return "Please enter a valid Google Drive folder URL.";
 }
 
-export default function AddFolderModal({ onClose, onCreated }: AddFolderModalProps) {
+export default function AddFolderModal({ onClose, onCreated, triggerRef }: AddFolderModalProps) {
   const [url, setUrl] = useState("");
   const [state, setState] = useState<ModalState>("idle");
   const [folderName, setFolderName] = useState("");
@@ -57,17 +58,22 @@ export default function AddFolderModal({ onClose, onCreated }: AddFolderModalPro
   const validateFolder = useValidateFolder();
   const createProject = useCreateProject();
 
+  const handleClose = useCallback(() => {
+    onClose();
+    triggerRef?.current?.focus();
+  }, [onClose, triggerRef]);
+
   useEffect(() => {
     urlRef.current?.focus();
   }, []);
 
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") handleClose();
     };
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [onClose]);
+  }, [handleClose]);
 
   const doValidate = useCallback(
     (value: string) => {
@@ -138,7 +144,7 @@ export default function AddFolderModal({ onClose, onCreated }: AddFolderModalPro
         name: folderName,
       });
       onCreated?.(newProject);
-      onClose();
+      handleClose();
     } catch (err) {
       setState("error");
       setErrorMessage(getErrorMessage(err));
@@ -150,7 +156,7 @@ export default function AddFolderModal({ onClose, onCreated }: AddFolderModalPro
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-        onClick={onClose}
+        onClick={handleClose}
       />
 
       {/* Modal */}
@@ -164,7 +170,7 @@ export default function AddFolderModal({ onClose, onCreated }: AddFolderModalPro
             </h2>
           </div>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="p-1 text-surface-100 transition-colors hover:text-fg-primary"
           >
             <X className="h-5 w-5" />
@@ -195,7 +201,7 @@ export default function AddFolderModal({ onClose, onCreated }: AddFolderModalPro
                     ? "border-green-500/50 focus:border-green-500/50"
                     : ""
               }`}
-              disabled={state === "creating"}
+              disabled={state === "creating" || state === "validating"}
               required
             />
           </div>
@@ -227,7 +233,7 @@ export default function AddFolderModal({ onClose, onCreated }: AddFolderModalPro
           <div className="flex gap-3 pt-2">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleClose}
               className="btn-secondary flex-1"
             >
               Cancel

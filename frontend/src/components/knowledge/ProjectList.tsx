@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useProjects } from "@/hooks/useProjects";
 import ProjectCard from "./ProjectCard";
 import AddFolderModal from "./AddFolderModal";
@@ -6,6 +6,7 @@ import { FolderPlus, FolderOpen } from "lucide-react";
 
 export default function ProjectList() {
   const [showModal, setShowModal] = useState(false);
+  const addFolderBtnRef = useRef<HTMLButtonElement>(null);
   const { data: projects, isLoading, error } = useProjects();
 
   return (
@@ -21,6 +22,7 @@ export default function ProjectList() {
             </p>
           </div>
           <button
+            ref={addFolderBtnRef}
             onClick={() => setShowModal(true)}
             className="btn-primary"
           >
@@ -86,7 +88,7 @@ export default function ProjectList() {
 
         {/* Modal */}
         {showModal && (
-          <AddFolderModal onClose={() => setShowModal(false)} />
+          <AddFolderModal onClose={() => setShowModal(false)} triggerRef={addFolderBtnRef} />
         )}
       </div>
     </div>

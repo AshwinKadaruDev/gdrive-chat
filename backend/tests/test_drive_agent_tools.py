@@ -1,11 +1,8 @@
 """Tests for Drive agent tool definitions."""
 
 from app.services.agent_tools import (
-    ALL_TOOL_DEFINITIONS,
     DRIVE_AGENT_TOOLS,
     DRIVE_ONLY_TOOLS,
-    RAG_AGENT_TOOLS,
-    RAG_ONLY_TOOLS,
     SHARED_TOOLS,
 )
 
@@ -15,15 +12,6 @@ def _tool_names(tools: list[dict]) -> list[str]:
 
 
 class TestToolGroupComposition:
-    def test_rag_only_tools_names(self):
-        names = _tool_names(RAG_ONLY_TOOLS)
-        assert names == [
-            "hybrid_search",
-            "search_within_file",
-            "read_chunk_context",
-            "get_document_outline",
-        ]
-
     def test_drive_only_tools_names(self):
         names = _tool_names(DRIVE_ONLY_TOOLS)
         assert names == [
@@ -41,30 +29,21 @@ class TestToolGroupComposition:
         assert "request_clarification" in names
         assert len(names) == 9
 
-    def test_rag_agent_tools_is_rag_plus_shared(self):
-        assert RAG_AGENT_TOOLS == RAG_ONLY_TOOLS + SHARED_TOOLS
-
     def test_drive_agent_tools_is_drive_plus_shared(self):
         assert DRIVE_AGENT_TOOLS == DRIVE_ONLY_TOOLS + SHARED_TOOLS
-
-    def test_all_tool_definitions_backward_compat(self):
-        assert ALL_TOOL_DEFINITIONS is RAG_AGENT_TOOLS
-
-    def test_rag_agent_tool_count(self):
-        assert len(RAG_AGENT_TOOLS) == 13
 
     def test_drive_agent_tool_count(self):
         assert len(DRIVE_AGENT_TOOLS) == 12
 
-    def test_no_overlap_between_rag_and_drive_only(self):
-        rag_names = set(_tool_names(RAG_ONLY_TOOLS))
+    def test_no_overlap_between_drive_only_and_shared(self):
         drive_names = set(_tool_names(DRIVE_ONLY_TOOLS))
-        assert rag_names.isdisjoint(drive_names)
+        shared_names = set(_tool_names(SHARED_TOOLS))
+        assert drive_names.isdisjoint(shared_names)
 
 
 class TestToolSchemaValidity:
     def test_all_tools_have_type_and_function(self):
-        for tool_list in [RAG_ONLY_TOOLS, DRIVE_ONLY_TOOLS, SHARED_TOOLS]:
+        for tool_list in [DRIVE_ONLY_TOOLS, SHARED_TOOLS]:
             for tool in tool_list:
                 assert tool["type"] == "function"
                 assert "function" in tool

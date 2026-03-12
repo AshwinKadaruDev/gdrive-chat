@@ -5,132 +5,15 @@ Each tool follows the OpenAI function calling schema format so that
 they can be used with both OpenAI and Anthropic (after conversion).
 
 Tools are grouped into:
-- RAG_ONLY_TOOLS: require pre-indexed Azure AI Search data
-- DRIVE_ONLY_TOOLS: use Google Drive API directly (no pre-indexing)
-- SHARED_TOOLS: common to both agent types
+- DRIVE_ONLY_TOOLS: use Google Drive API directly
+- SHARED_TOOLS: common utilities (spreadsheets, metadata, etc.)
 
-Composed sets:
-- RAG_AGENT_TOOLS = RAG_ONLY_TOOLS + SHARED_TOOLS (13 tools)
-- DRIVE_AGENT_TOOLS = DRIVE_ONLY_TOOLS + SHARED_TOOLS (12 tools)
-- ALL_TOOL_DEFINITIONS = RAG_AGENT_TOOLS (backward compat)
+Composed set:
+- DRIVE_AGENT_TOOLS = DRIVE_ONLY_TOOLS + SHARED_TOOLS
 """
 
 # ------------------------------------------------------------------ #
-# RAG-only tools (require Azure AI Search index)
-# ------------------------------------------------------------------ #
-
-RAG_ONLY_TOOLS: list[dict] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "hybrid_search",
-            "description": (
-                "Search across ALL files in the project using both semantic similarity "
-                "and keyword matching. Use this as the primary search tool when you need "
-                "to find information across the entire folder. Returns the most relevant "
-                "chunks of content ranked by combined text and vector relevance."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query. Can be a natural language question or keywords.",
-                    },
-                    "file_types": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "Optional list of file types to filter by (e.g., ['pdf', 'docx', 'xlsx']). "
-                            "Leave empty to search all file types."
-                        ),
-                    },
-                    "top_k": {
-                        "type": "integer",
-                        "description": "Number of results to return (default 8, max 20).",
-                        "default": 8,
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_within_file",
-            "description": (
-                "Search within a SPECIFIC file by file_id. Use this when you already "
-                "know which file contains the answer and want to find the relevant "
-                "section. More precise than hybrid_search for targeted lookups."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query.",
-                    },
-                    "file_id": {
-                        "type": "string",
-                        "description": "The Google Drive file ID to search within.",
-                    },
-                    "top_k": {
-                        "type": "integer",
-                        "description": "Number of results to return (default 5).",
-                        "default": 5,
-                    },
-                },
-                "required": ["query", "file_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_chunk_context",
-            "description": (
-                "Read a specific chunk and its surrounding context (previous and next "
-                "chunks). Use this when a search result snippet is too short and you "
-                "need more context around a specific passage."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "chunk_id": {
-                        "type": "string",
-                        "description": "The chunk ID from a previous search result.",
-                    },
-                },
-                "required": ["chunk_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_document_outline",
-            "description": (
-                "Get the outline / table of contents of a document, showing section "
-                "headings and page numbers. Use this to understand the structure of "
-                "a long document before reading specific sections."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "file_id": {
-                        "type": "string",
-                        "description": "The Google Drive file ID of the document.",
-                    },
-                },
-                "required": ["file_id"],
-            },
-        },
-    },
-]
-
-# ------------------------------------------------------------------ #
-# Drive-only tools (use Google Drive API directly, no pre-indexing)
+# Drive-only tools (use Google Drive API directly)
 # ------------------------------------------------------------------ #
 
 DRIVE_ONLY_TOOLS: list[dict] = [
@@ -227,7 +110,7 @@ DRIVE_ONLY_TOOLS: list[dict] = [
 ]
 
 # ------------------------------------------------------------------ #
-# Shared tools (common to both RAG and Drive agents)
+# Shared tools
 # ------------------------------------------------------------------ #
 
 SHARED_TOOLS: list[dict] = [
@@ -458,8 +341,4 @@ SHARED_TOOLS: list[dict] = [
 # Composed tool sets
 # ------------------------------------------------------------------ #
 
-RAG_AGENT_TOOLS: list[dict] = RAG_ONLY_TOOLS + SHARED_TOOLS
 DRIVE_AGENT_TOOLS: list[dict] = DRIVE_ONLY_TOOLS + SHARED_TOOLS
-
-# Backward compat alias
-ALL_TOOL_DEFINITIONS: list[dict] = RAG_AGENT_TOOLS

@@ -26,21 +26,11 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/auth/google/callback"
 
-    # Azure AI Search (optional — app starts without search, but RAG won't work)
-    AZURE_SEARCH_ENDPOINT: Optional[str] = None
-    AZURE_SEARCH_API_KEY: Optional[str] = None
-    AZURE_SEARCH_INDEX_NAME: str = "talk-to-folder-chunks"
-
     # OpenAI
     OPENAI_API_KEY: str
 
     # Anthropic (optional) — TODO: Re-enable Anthropic support — currently unused
     ANTHROPIC_API_KEY: Optional[str] = None
-
-    # Temporal
-    TEMPORAL_HOST: str = "localhost:7233"
-    TEMPORAL_NAMESPACE: str = "default"
-    TEMPORAL_API_KEY: Optional[str] = None
 
     # Security
     ENCRYPTION_KEY: str
@@ -48,3 +38,23 @@ class Settings(BaseSettings):
 
     # Azure Storage (optional)
     AZURE_STORAGE_CONNECTION_STRING: Optional[str] = None
+
+    # LLM Model names
+    AGENT_MODEL: str = "gpt-5.2"
+
+    # Resource limits
+    MAX_MESSAGE_LENGTH: int = 32000
+    MAX_CHAT_HISTORY_MESSAGES: int = 100
+    MAX_SPREADSHEET_SEARCH_ROWS: int = 10000
+    MAX_FILE_DOWNLOAD_BYTES: int = 104857600   # 100 MB
+    MAX_SPREADSHEET_BYTES: int = 52428800      # 50 MB
+    MAX_SYNC_FILES: int = 5000
+    MAX_FOLDER_DEPTH: int = 10
+
+    # Timeouts
+    DRIVE_API_TIMEOUT: float = 30.0
+    DRIVE_DOWNLOAD_TIMEOUT: float = 60.0
+
+    # CORS
+    CORS_ALLOWED_METHODS: str = "GET,POST,DELETE,OPTIONS"
+    CORS_ALLOWED_HEADERS: str = "Content-Type,X-Requested-With"

@@ -48,7 +48,7 @@ export async function logout(): Promise<void> {
 // ---------- Projects ----------
 
 export async function getProjects(): Promise<Project[]> {
-  const { data } = await api.get<Project[]>("/api/projects");
+  const { data } = await api.get<Project[]>("/api/projects/");
   return data;
 }
 
@@ -94,15 +94,6 @@ export async function getSyncStatus(projectId: string): Promise<Project> {
 
 // ---------- Chat ----------
 
-export async function getChatSessions(
-  projectId: string
-): Promise<ChatSession[]> {
-  const { data } = await api.get<ChatSession[]>(
-    `/api/chat/sessions/${projectId}`
-  );
-  return data;
-}
-
 export async function getMessages(sessionId: string): Promise<Message[]> {
   const { data } = await api.get<Message[]>(
     `/api/chat/sessions/${sessionId}/messages`
@@ -138,9 +129,7 @@ export async function streamChat(
   params: {
     message: string;
     session_id?: string;
-    project_id?: string;
     gdrive_folder_id?: string;
-    agent_type?: string;
   },
   callbacks: StreamChatCallbacks
 ): Promise<void> {
@@ -213,8 +202,8 @@ export async function streamChat(
                 callbacks.onDone();
                 break;
             }
-          } catch {
-            // Ignore parse errors
+          } catch (e) {
+            console.warn("SSE parse error:", eventType, e);
           }
           eventType = "";
           eventData = "";
@@ -222,6 +211,7 @@ export async function streamChat(
       }
     }
   } finally {
+    reader.cancel().catch(() => {});
     if (!doneFired) {
       callbacks.onDone();
     }

@@ -4,7 +4,6 @@ import { createElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 vi.mock("@/services/api", () => ({
-  getChatSessions: vi.fn().mockResolvedValue([]),
   getDriveChatSessions: vi.fn().mockResolvedValue([]),
   getMessages: vi.fn().mockResolvedValue([]),
   streamChat: vi.fn().mockResolvedValue(undefined),
@@ -35,9 +34,7 @@ describe("useUnifiedChat", () => {
     const { result } = renderHook(
       () =>
         useUnifiedChat({
-          agentType: "RAG",
-          projectId: "proj-1",
-          folderId: null,
+          folderId: "folder-1",
         }),
       { wrapper: makeWrapper() }
     );
@@ -71,9 +68,7 @@ describe("useUnifiedChat", () => {
     const { result } = renderHook(
       () =>
         useUnifiedChat({
-          agentType: "RAG",
-          projectId: "proj-1",
-          folderId: null,
+          folderId: "folder-1",
         }),
       { wrapper: makeWrapper() }
     );
@@ -94,9 +89,7 @@ describe("useUnifiedChat", () => {
     const { result } = renderHook(
       () =>
         useUnifiedChat({
-          agentType: "RAG",
-          projectId: "proj-1",
-          folderId: null,
+          folderId: "folder-1",
         }),
       { wrapper: makeWrapper() }
     );
@@ -119,8 +112,6 @@ describe("useUnifiedChat", () => {
     const { result } = renderHook(
       () =>
         useUnifiedChat({
-          agentType: "DRIVE",
-          projectId: null,
           folderId: "folder-1",
         }),
       { wrapper: makeWrapper() }

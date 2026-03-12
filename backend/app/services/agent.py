@@ -13,7 +13,10 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.services.agent_tools import ALL_TOOL_DEFINITIONS
+import httpx
+import openai
+
+from app.services.agent_tools import DRIVE_AGENT_TOOLS
 from app.services.tool_executor import Citation, execute_tool
 
 logger = logging.getLogger(__name__)
@@ -28,43 +31,6 @@ class AgentResponse:
     iterations: int = 0
     hit_limit: bool = False
 
-
-SYSTEM_PROMPT = """\
-You are an expert research assistant with access to a project folder containing \
-documents, spreadsheets, and other files. Your job is to answer the user's question \
-accurately and thoroughly.
-
-WHEN TO USE TOOLS vs. ANSWER DIRECTLY:
-- If the user asks about specific facts, data, or content from the project files → \
-search and read the files before answering.
-- If the answer is already in the conversation history (e.g. a follow-up question \
-about something you just found) → answer directly from context without searching again.
-- If the user asks a general knowledge question (e.g. "what does 401k mean?", \
-"explain ROI") → answer directly using your own knowledge. No tools needed.
-- When in doubt about whether information is in the files, search first.
-
-RULES:
-1. When answering from project files, cite your sources. When answering from general \
-knowledge or conversation context, just answer naturally — no citations needed.
-2. If you cannot find the answer after thorough searching, use report_inability to explain what you tried.
-3. If the question is ambiguous, use request_clarification to ask for more details.
-4. For spreadsheet questions, first use get_spreadsheet_overview, then targeted tools.
-5. For document questions, first try hybrid_search, then read specific pages if needed.
-6. Be precise and quote relevant text when appropriate.
-7. If you find partial information, say so explicitly rather than making up the rest.
-
-RESPONSE FORMAT:
-- Write in clear Markdown. Use headings, bullets, or tables only when they help \
-structure a complex answer — not for short replies.
-- When citing project files, use numbered references like [1], [2] inline right \
-after the claim they support. The system attaches source details automatically.
-- Example: "Revenue grew 15% year-over-year [1], driven primarily by the APAC region [2]."
-- For conversational or general-knowledge answers, write naturally without citations \
-or heavy formatting.
-
-You have access to the following tools to search and read the project files. \
-Use them strategically — only when the answer requires information from the files.\
-"""
 
 DRIVE_SYSTEM_PROMPT = """\
 You are an expert research assistant with access to a Google Drive folder. \
@@ -116,21 +82,18 @@ class FolderAgent:
         self,
         llm_client: "LLMClient",
         drive_service: "GoogleDriveService",
-        search_service: "AzureSearchService | None" = None,
-        embeddings_service: "EmbeddingsService | None" = None,
-        model: str = "gpt-5.2",  # TODO: Re-enable Anthropic — was "claude-sonnet-4-5-20250929"
+        model: str | None = None,
         max_iterations: int = 15,
         tools: list[dict] | None = None,
         system_prompt: str | None = None,
     ) -> None:
+        from app.dependencies import get_settings
         self.llm_client = llm_client
-        self.search_service = search_service
-        self.embeddings_service = embeddings_service
         self.drive_service = drive_service
-        self.model = model
+        self.model = model or get_settings().AGENT_MODEL
         self.max_iterations = max_iterations
-        self.tools = tools if tools is not None else ALL_TOOL_DEFINITIONS
-        self.system_prompt = system_prompt if system_prompt is not None else SYSTEM_PROMPT
+        self.tools = tools if tools is not None else DRIVE_AGENT_TOOLS
+        self.system_prompt = system_prompt if system_prompt is not None else DRIVE_SYSTEM_PROMPT
         self.tool_cache: dict = {}
 
     async def answer(
@@ -139,6 +102,7 @@ class FolderAgent:
         project_id: str,
         user_access_token: str,
         chat_history: list[dict] | None = None,
+        session_id: str | None = None,
     ) -> AgentResponse:
         """
         Run the ReAct loop to answer a user question.
@@ -178,7 +142,7 @@ class FolderAgent:
         all_citations: list[Citation] = []
 
         for iteration in range(1, self.max_iterations + 1):
-            logger.info("Agent iteration %d/%d", iteration, self.max_iterations)
+            logger.info("Agent iteration %d/%d (session=%s)", iteration, self.max_iterations, session_id)
 
             # Call LLM with tools
             try:
@@ -187,8 +151,8 @@ class FolderAgent:
                     tools=self.tools,
                     model=self.model,
                 )
-            except Exception as exc:
-                logger.error("LLM call failed on iteration %d: %s", iteration, exc, exc_info=True)
+            except (openai.RateLimitError, openai.APIStatusError, openai.APIConnectionError, openai.APITimeoutError, httpx.HTTPError) as exc:
+                logger.error("LLM call failed on iteration %d: %s: %s", iteration, type(exc).__name__, exc, exc_info=True)
                 return AgentResponse(
                     content=(
                         "I'm sorry, something went wrong while processing your request. "
@@ -270,9 +234,7 @@ class FolderAgent:
                     tool_args=tool_args,
                     project_id=project_id,
                     access_token=user_access_token,
-                    search_service=self.search_service,
                     drive_service=self.drive_service,
-                    embeddings_service=self.embeddings_service,
                     tool_cache=self.tool_cache,
                 )
 
@@ -318,6 +280,7 @@ class FolderAgent:
         project_id: str,
         user_access_token: str,
         chat_history: list[dict] | None = None,
+        session_id: str | None = None,
     ) -> AsyncGenerator[tuple[str, Any], None]:
         """
         Run the ReAct loop, yielding SSE-style events.
@@ -329,8 +292,8 @@ class FolderAgent:
         - ``("done", None)`` — signals completion
         """
         logger.info(
-            "[AGENT-STREAM] Starting: model=%s, question=%r, folder=%s, history=%d msgs",
-            self.model, question[:80], project_id, len(chat_history) if chat_history else 0,
+            "[AGENT-STREAM] Starting: model=%s, question=%r, folder=%s, session=%s, history=%d msgs",
+            self.model, question[:80], project_id, session_id, len(chat_history) if chat_history else 0,
         )
         messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
         if chat_history:
@@ -342,19 +305,15 @@ class FolderAgent:
 
         _TOOL_STATUS = {
             "search_drive": "Searching files...",
-            "hybrid_search": "Searching documents...",
             "get_file_content": "Reading file...",
             "get_folder_structure": "Scanning folder...",
             "get_file_metadata": "Getting file info...",
             "read_document_pages": "Reading pages...",
-            "search_within_file": "Searching in document...",
             "search_within_file_text": "Searching in file...",
             "get_spreadsheet_overview": "Reading spreadsheet...",
             "read_spreadsheet_rows": "Reading rows...",
             "search_spreadsheet": "Searching spreadsheet...",
             "get_column_stats": "Computing stats...",
-            "read_chunk_context": "Reading context...",
-            "get_document_outline": "Reading outline...",
         }
 
         for iteration in range(1, self.max_iterations + 1):
@@ -372,8 +331,8 @@ class FolderAgent:
                         yield ("delta", event.text)
                     elif event.type == "response_complete":
                         llm_response = event.response
-            except Exception as exc:
-                logger.error("[AGENT-STREAM] LLM call failed on iteration %d: %s", iteration, exc, exc_info=True)
+            except (openai.RateLimitError, openai.APIStatusError, openai.APIConnectionError, openai.APITimeoutError, httpx.HTTPError) as exc:
+                logger.error("[AGENT-STREAM] LLM call failed on iteration %d: %s: %s", iteration, type(exc).__name__, exc, exc_info=True)
                 yield ("delta", "I'm sorry, something went wrong while processing your request. Please try again.")
                 # Deduplicate and serialize citations collected so far
                 seen: set[tuple[str, str | None]] = set()
@@ -486,9 +445,7 @@ class FolderAgent:
                     tool_args=tool_args,
                     project_id=project_id,
                     access_token=user_access_token,
-                    search_service=self.search_service,
                     drive_service=self.drive_service,
-                    embeddings_service=self.embeddings_service,
                     tool_cache=self.tool_cache,
                 )
                 logger.info(

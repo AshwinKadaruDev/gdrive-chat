@@ -8,7 +8,7 @@
 
 ### What This Is
 
-**Talk-to-a-Folder** is a take-home interview project — a production-grade web application that lets users have AI-powered conversations with the contents of any Google Drive folder. The goal is a polished, professional product that does the core functionality perfectly: authenticate with Google, paste a Drive link, and immediately start asking questions about the files inside — with citations linking back to source documents.
+**Talk-to-a-Folder** is a web application that lets users have AI-powered conversations with the contents of any Google Drive folder. Authenticate with Google, paste a Drive link, and immediately start asking questions about the files inside — with citations linking back to source documents.
 
 ### Problem
 
@@ -18,24 +18,23 @@ Knowledge workers store critical documents across Google Drive — reports, spre
 
 A conversational interface that:
 
-1. **Ingests** all files within a Google Drive folder (recursively) — PDFs, DOCX, XLSX, Sheets, Slides, text, images
-2. **Indexes** content using hybrid search (vector embeddings + keyword) for high-recall retrieval
-3. **Answers** natural language questions via a ReAct agent that searches, reads, and reasons across the entire corpus
-4. **Cites** every claim back to the source file with clickable links to Google Drive
+1. **Connects** to any Google Drive folder via its URL
+2. **Answers** natural language questions via a ReAct agent that searches, reads, and reasons across the files in real time via the Google Drive API
+3. **Cites** every claim back to the source file with clickable links to Google Drive
 
 ### Core User Flow
 
 ```
-Sign in with Google → Paste a Drive folder URL → Folder syncs in background →
+Sign in with Google → Paste a Drive folder URL →
 Select folder in Chat → Ask questions → Get answers with citations
 ```
 
 ### Quality Bar
 
 - **UI/UX**: Dark-mode, minimal, responsive. No rough edges — loading states, error handling, empty states all covered.
-- **Reliability**: Durable ingestion via Temporal (retries, fault tolerance). Graceful degradation when services are unavailable.
+- **Reliability**: Graceful degradation when services are unavailable.
 - **Security**: Encrypted token storage, server-side credential injection, no secrets exposed to frontend or LLM.
-- **Accuracy**: Hybrid search (semantic + keyword) with generated questions per chunk for better retrieval. Agent always searches before answering, cites sources, and reports when it can't find information.
+- **Accuracy**: Agent uses folder-first strategy (browse structure, then read specific files), cites sources, and reports when it can't find information.
 
 ---
 
@@ -46,10 +45,9 @@ tenex/
 ├── CLAUDE.md                         # Project instructions for Claude Code
 ├── CODEBASE.md                       # ← this file
 ├── Dockerfile                        # API image (multi-stage: frontend build + backend)
-├── Dockerfile.worker                 # Worker image (Python + Tesseract/Poppler)
-├── docker-compose.yml                # Local dev: Postgres, Temporal, API, Worker
-├── run.ps1                           # Start all 4 dev services
-├── setup.ps1                         # One-time environment setup (8 steps)
+├── deploy.ps1                        # Build + push Docker image to ACR
+├── run.ps1                           # Start backend + frontend dev servers
+├── setup.ps1                         # One-time environment setup (7 steps)
 ├── .env / .env.example               # Environment variables
 │
 ├── backend/
@@ -57,16 +55,18 @@ tenex/
 │   │   ├── env.py                    # Async Alembic config (converts postgresql:// to asyncpg://)
 │   │   └── versions/
 │   │       ├── 7333ef8eb49b_initial_tables.py
-│   │       └── a1b2c3d4e5f6_add_drive_chat_support.py
+│   │       ├── a1b2c3d4e5f6_add_drive_chat_support.py
+│   │       ├── b2c3d4e5f6a7_add_constraints_and_indexes.py
+│   │       └── c3d4e5f6a7b8_remove_agent_type_column.py
 │   ├── app/
-│   │   ├── main.py                   # FastAPI app, CORS, router mounts, SPA static
+│   │   ├── main.py                   # FastAPI app, AuthGuardMiddleware, CORS, rate limiting, router mounts, SPA static
 │   │   ├── config.py                 # Pydantic Settings (all env vars)
 │   │   ├── dependencies.py           # DI: get_db, get_current_user, get_settings
 │   │   ├── models/
 │   │   │   ├── __init__.py           # Base + re-exports
 │   │   │   ├── user.py              # User (Google OAuth tokens, encrypted)
 │   │   │   ├── project.py           # Project + ProjectStatus enum
-│   │   │   ├── chat.py              # ChatSession + AgentType enum (RAG|DRIVE)
+│   │   │   ├── chat.py              # ChatSession
 │   │   │   └── message.py           # Message + MessageRole enum
 │   │   ├── schemas/
 │   │   │   ├── user.py              # UserResponse
@@ -76,42 +76,42 @@ tenex/
 │   │   ├── routers/
 │   │   │   ├── auth.py              # Google OAuth login/callback/logout/me
 │   │   │   ├── projects.py          # CRUD: list, create, get, delete
-│   │   │   ├── chat.py              # Send message, list sessions/messages
+│   │   │   ├── chat.py              # Send message, list sessions/messages, streaming
 │   │   │   └── sync.py              # Trigger sync, get status
 │   │   ├── services/
-│   │   │   ├── __init__.py          # Re-exports: FolderAgent, DRIVE_SYSTEM_PROMPT, DRIVE_AGENT_TOOLS, RAG_AGENT_TOOLS, AzureSearchService, EmbeddingsService, GoogleDriveService, LLMClient
-│   │   │   ├── agent.py             # FolderAgent — ReAct loop (max 15 iters), SYSTEM_PROMPT + DRIVE_SYSTEM_PROMPT
-│   │   │   ├── agent_tools.py       # Tool definitions grouped: RAG_ONLY (4), DRIVE_ONLY (3), SHARED (9). Composed: RAG_AGENT_TOOLS (13), DRIVE_AGENT_TOOLS (12)
-│   │   │   ├── tool_executor.py     # Tool dispatch + Citation dataclass + 16 handler functions (13 RAG/shared + 3 Drive)
-│   │   │   ├── llm.py              # LLMClient (Anthropic + OpenAI, normalized response format)
-│   │   │   ├── azure_search.py      # Azure AI Search (hybrid vector + keyword)
-│   │   │   ├── embeddings.py        # OpenAI text-embedding-ada-002
-│   │   │   ├── google_drive.py      # Drive API v3 (list, download, export, metadata, search_files)
-│   │   │   └── google_auth.py       # OAuth token exchange utility (unused — logic lives in auth router)
+│   │   │   ├── __init__.py          # Re-exports: FolderAgent, DRIVE_SYSTEM_PROMPT, DRIVE_AGENT_TOOLS, GoogleDriveService, LLMClient
+│   │   │   ├── agent.py             # FolderAgent — ReAct loop (max 15 iters), DRIVE_SYSTEM_PROMPT
+│   │   │   ├── agent_tools.py       # Tool definitions: DRIVE_ONLY (3), SHARED (9). Composed: DRIVE_AGENT_TOOLS (12)
+│   │   │   ├── tool_executor.py     # Tool dispatch + Citation dataclass + 12 handler functions
+│   │   │   ├── llm.py              # LLMClient (OpenAI Responses API, normalized response format)
+│   │   │   └── google_drive.py      # Drive API v3 (list, download, export, metadata, search_files)
 │   │   └── utils/
-│   │       ├── security.py          # Fernet encryption, in-memory session store
+│   │       ├── security.py          # Fernet encryption, stateless sessions, token refresh
 │   │       └── file_parsers.py      # PDF/DOCX/XLSX text extraction + token counting
 │   ├── tests/
 │   │   ├── conftest.py              # Fixtures: test_client, unauthed_client, mock_user
-│   │   ├── test_drive_agent_tools.py # Drive agent tool definition tests
-│   │   ├── test_drive_tool_handlers.py # Drive tool handler tests (search_drive, get_file_content, search_within_file_text)
-│   │   ├── test_spreadsheet_tools.py # Spreadsheet tool handler tests (_download_spreadsheet_bytes, overview, rows, search, stats + citations)
+│   │   ├── test_agent.py            # FolderAgent ReAct loop tests
+│   │   ├── test_drive_agent_tools.py # Agent tool definition tests
+│   │   ├── test_drive_tool_handlers.py # Drive tool handler tests
+│   │   ├── test_spreadsheet_tools.py # Spreadsheet tool handler tests
+│   │   ├── test_llm_responses_api.py # LLM Responses API integration tests
+│   │   ├── test_llm_streaming.py    # LLM streaming tests
+│   │   ├── test_schemas.py          # Pydantic schema validation tests
+│   │   ├── test_tool_arg_validation.py # Tool argument validation tests
+│   │   ├── test_access_token_refresh.py # OAuth token refresh tests
+│   │   ├── test_auth_guard.py       # AuthGuardMiddleware + CSRF tests
+│   │   ├── routers/
+│   │   │   ├── test_auth.py         # Auth endpoint tests
+│   │   │   ├── test_auth_config.py  # Auth configuration tests
+│   │   │   ├── test_chat.py         # Chat endpoint tests
+│   │   │   ├── test_projects.py     # Project CRUD tests
+│   │   │   ├── test_projects_validate.py # Folder validation tests
+│   │   │   └── test_sync.py         # Sync endpoint tests
+│   │   ├── services/
+│   │   │   ├── test_google_drive.py # Drive service tests
+│   │   │   └── test_google_drive_search.py # Drive search tests
 │   │   └── __init__.py
 │   ├── pytest.ini                    # asyncio_mode=auto, testpaths=tests
-│   └── requirements.txt
-│
-├── worker/
-│   ├── main.py                       # Temporal worker entrypoint (retry connect, 15 attempts)
-│   ├── activities/
-│   │   ├── crawl_folder.py          # Recursive Drive listing via httpx (401 → non-retryable)
-│   │   ├── extract_content.py       # MIME-dispatch: PDF/DOCX/XLSX/Sheets/OCR (401 → non-retryable)
-│   │   ├── chunk_content.py         # Heading → paragraph → fixed-window splitting
-│   │   ├── generate_embeddings.py   # OpenAI ada-002, batch 20, rate-limit retry
-│   │   ├── generate_questions.py    # LLM-generated RAG questions + embedding
-│   │   ├── index_chunks.py         # Azure Search batch upsert (100/batch)
-│   │   └── refresh_token.py        # Google OAuth token refresh (env-var credentials)
-│   ├── workflows/
-│   │   └── sync_folder.py          # SyncFolderWorkflow orchestrator
 │   └── requirements.txt
 │
 ├── frontend/
@@ -126,13 +126,15 @@ tenex/
 │       ├── App.tsx                   # Auth gate → Knowledge/Chat tab routing
 │       ├── main.tsx                  # QueryClientProvider → BrowserRouter → App
 │       ├── index.css                 # Tailwind + custom btn/card/input classes
-│       ├── types/index.ts            # User, Project, ChatSession, Message, Citation, SendMessageResponse
-│       ├── services/api.ts           # Axios instance + all endpoint functions + 401 interceptor
+│       ├── types/index.ts            # User, Project, ChatSession, Message, Citation
+│       ├── services/
+│       │   ├── api.ts               # Axios instance + all endpoint functions + SSE streaming + 401 interceptor
+│       │   └── __tests__/api.test.ts # API service tests
 │       ├── hooks/
 │       │   ├── useAuth.ts           # Zustand store (user, fetchUser, login, logout)
 │       │   ├── useProjects.ts       # React Query: useProjects, useProjectSyncStatus, useCreateProject, useDeleteProject, useSyncProject
-│       │   ├── useChat.ts           # useChatSessions, useChatMessages, useChat (local + React Query hybrid)
-│       │   └── useDriveChat.ts      # useDriveChatSessions, useDriveChat (same pattern as useChat)
+│       │   ├── useUnifiedChat.ts    # useUnifiedChat, useUnifiedChatSessions, useDeleteChatSession
+│       │   └── useTheme.ts          # Zustand dark/light theme toggle
 │       └── components/
 │           ├── TenexLogo.tsx        # Shared logo: pixelated X icon + wordmark SVGs
 │           ├── auth/
@@ -144,19 +146,14 @@ tenex/
 │           │   ├── AddFolderModal.tsx # Drive URL input form with validation
 │           │   └── SyncProgress.tsx  # Animated progress bar + status text
 │           ├── chat/
-│           │   ├── ChatContainer.tsx # Two-pane: session sidebar + messages (RAG Chat)
+│           │   ├── UnifiedChatContainer.tsx # Two-pane: session sidebar + folder picker + messages
 │           │   ├── ChatInput.tsx     # Auto-resize textarea, Enter to send, Shift+Enter newline
 │           │   ├── MessageList.tsx   # Auto-scroll message feed + typing indicator
 │           │   ├── MessageBubble.tsx # Citation parsing via regex, whitespace-pre-wrap
 │           │   ├── CitationTooltip.tsx # Click/hover tooltip with snippet + Drive link
-│           │   └── ProjectSelector.tsx # Dropdown for completed projects only
-│           ├── drive-chat/
-│           │   ├── DriveChatContainer.tsx # Two-pane: session sidebar + messages (Drive Chat)
-│           │   └── FolderUrlInput.tsx     # Google Drive folder URL input with validation
+│           │   └── ProjectSelector.tsx # Dropdown for connected folders
 │           └── layout/
-│               ├── Header.tsx       # Top bar: branding + user avatar/initials + logout
-│               ├── TabNav.tsx       # Knowledge | RAG Chat | Drive Chat tabs (3 NavLinks)
-│               └── Sidebar.tsx      # Wrapper (not actively used — Header + TabNav composed in App.tsx)
+│               └── TopBar.tsx       # Top bar: Knowledge/Chat tabs + user avatar + theme toggle + logout
 │
 └── claude_docs/
     ├── 001_agentic_gdrive_chat.md   # Product requirements document
@@ -173,16 +170,10 @@ tenex/
 User → React SPA (Vite :5173) → FastAPI API (:8000) ──→ PostgreSQL (users, projects, sessions, messages)
                                      │
                                      ├──→ Google OAuth 2.0 (login, token refresh)
-                                     ├──→ FolderAgent (ReAct loop) ──→ Azure AI Search (hybrid query)
-                                     │                               ──→ Google Drive (file read)
-                                     │                               ──→ GPT-5.2 (reasoning)
+                                     ├──→ FolderAgent (ReAct loop) ──→ Google Drive (file search/read)
+                                     │                               ──→ GPT-5.2 (OpenAI Responses API, reasoning=xhigh)
                                      │
-                                     └──→ Temporal (start sync workflow)
-                                              │
-                                              └──→ Worker Pipeline:
-                                                   crawl_folder → extract_content → chunk_content
-                                                   → generate_embeddings → generate_questions → index_chunks
-                                                   → Azure AI Search (upsert)
+                                     └──→ Sync endpoint (file count discovery via Drive API)
 ```
 
 ### CORS
@@ -219,8 +210,9 @@ Production SPA: if `backend/static/` exists (copied from Vite build in Docker), 
 |--------|------|------|-------------|
 | `GET` | `/` | Yes | List all projects for user (newest first) → `ProjectResponse[]` |
 | `POST` | `/` | Yes | Create project from Drive URL → `ProjectResponse` (201) |
+| `POST` | `/validate-folder` | Yes | Validate a Drive folder URL → folder_id, name, url |
 | `GET` | `/{project_id}` | Yes | Get single project → `ProjectResponse` |
-| `DELETE` | `/{project_id}` | Yes | Delete project + cleanup Azure index → 204 |
+| `DELETE` | `/{project_id}` | Yes | Delete project → 204 |
 
 Project creation extracts folder ID from URL via regex: `drive.google.com/drive/(u/\d+/)?folders/([A-Za-z0-9_-]+)`. Falls back to accepting bare folder IDs.
 
@@ -228,18 +220,19 @@ Project creation extracts folder ID from URL via regex: `drive.google.com/drive/
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `POST` | `/` | Yes | Send message → `ChatResponse` (contains `message` + `session_id`). Supports `agent_type: "rag"` (default) or `"drive"`. |
-| `GET` | `/sessions/drive` | Yes | List Drive Chat sessions for current user (newest first) → `ChatSessionResponse[]` |
-| `GET` | `/sessions/{project_id}` | Yes | List RAG sessions for project (newest first) → `ChatSessionResponse[]` |
+| `POST` | `/` | Yes | Send message → `ChatResponse` (contains `message` + `session_id`) |
+| `POST` | `/stream` | Yes | Send message → SSE stream (events: session, status, delta, citations, done) |
+| `GET` | `/sessions/drive` | Yes | List chat sessions for current user (newest first) → `ChatSessionResponse[]` |
 | `GET` | `/sessions/{session_id}/messages` | Yes | List messages in session (chronological) → `MessageResponse[]` |
+| `DELETE` | `/sessions/{session_id}` | Yes | Delete a chat session → 204 |
 
-`POST /` behavior: If `session_id` provided, appends to existing session. For new sessions: RAG (`agent_type=rag`) requires `project_id`, Drive (`agent_type=drive`) requires `gdrive_folder_id`. Session title is first 120 chars of first message. Drive agent uses `DRIVE_AGENT_TOOLS` + `DRIVE_SYSTEM_PROMPT` with no search/embeddings services.
+`POST /` and `POST /stream` behavior: If `session_id` provided, appends to existing session. For new sessions: requires `gdrive_folder_id`. Session title is first 120 chars of first message. Agent uses `DRIVE_AGENT_TOOLS` + `DRIVE_SYSTEM_PROMPT`.
 
 ### Sync (`/api/sync`)
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `POST` | `/{project_id}` | Yes | Trigger sync → `ProjectResponse`. 409 if already syncing. Falls back to COMPLETED if Temporal unavailable. |
+| `POST` | `/{project_id}` | Yes | Trigger sync (file count discovery) → `ProjectResponse`. 409 if already syncing. |
 | `GET` | `/{project_id}/status` | Yes | Get current sync status → `ProjectResponse` |
 
 ---
@@ -253,19 +246,31 @@ Project creation extracts folder ID from URL via regex: `drive.google.com/drive/
 3. Google redirects back to `/auth/google/callback?code=...`
 4. Backend exchanges code for tokens, fetches user profile, upserts User row
 5. Tokens encrypted with Fernet before DB storage (both access + refresh)
-6. Backend creates in-memory session mapping (`session_id → user_id`)
-7. Sets HTTPOnly cookie: `session_id`, `samesite=lax`, `secure` derived from `FRONTEND_URL` scheme, `max_age=7 days`, `path=/`
+6. Backend creates a stateless session token (Fernet-encrypted `user_id`)
+7. Sets HTTPOnly cookie: `session_id`, `samesite=lax`, `secure` derived from `FRONTEND_URL` scheme, `max_age=24h`, `path=/`
 8. Redirects to `FRONTEND_URL` (default: `http://localhost:5173`)
 
 OAuth params: `access_type=offline` (requests refresh token), `prompt=consent` (forces consent every time).
 
 ### Session Management (`utils/security.py`)
 
-- **In-memory dict**: `_sessions: dict[str, str]` maps `session_id → user_id`
-- `create_session(user_id)` → generates `secrets.token_urlsafe()` session ID
-- `validate_session(session_id)` → returns user_id or None
-- `delete_session(session_id)` → removes from dict
-- **Limitation**: Single-process only. Needs Redis for multi-worker production deployments.
+- **Stateless Fernet tokens**: `create_session(user_id, settings)` encrypts the user_id into a Fernet token. The Fernet timestamp enables TTL enforcement without server-side state.
+- `validate_session(session_id, settings)` → decrypts token with `ttl=SESSION_MAX_AGE` (24h), returns user_id or None
+- `delete_session(session_id)` → adds token to `_revoked` dict (pruned on each revocation to prevent unbounded growth)
+- **Stateless by default**: No session store needed. The only server-side state is the small `_revoked` dict for explicit logouts.
+
+### AuthGuard Middleware (`main.py`)
+
+Defense-in-depth layer on all `/api/*` routes, running before handlers:
+- Validates session cookie via `validate_session()` → 401 if missing/invalid
+- **CSRF protection**: State-changing methods (POST, PUT, DELETE, PATCH) must include `X-Requested-With` header → 403 if missing (Axios sets this automatically)
+- Complements per-handler `Depends(get_current_user)` for proper user injection
+
+### Rate Limiting (`main.py` + `routers/chat.py`)
+
+- Uses `slowapi` with `@limiter.limit("10/minute")` on chat endpoints (`POST /` and `POST /stream`)
+- Rate key: session ID or remote IP address
+- `RateLimitExceeded` exception handler registered on app
 
 ### Token Encryption
 
@@ -302,7 +307,7 @@ projects (FK → users.id, CASCADE)
   name (VARCHAR 255)
   gdrive_folder_id (VARCHAR 255, nullable)
   gdrive_folder_url (VARCHAR 500, nullable)
-  sync_status (ENUM: PENDING|SYNCING|PROCESSING|COMPLETED|FAILED, default=PENDING)
+  sync_status (ENUM: PENDING|SYNCING|COMPLETED|FAILED, default=PENDING)
   files_total (INT, default=0)
   files_processed (INT, default=0)
   last_synced_at (TIMESTAMP TZ, nullable)
@@ -311,10 +316,9 @@ projects (FK → users.id, CASCADE)
 
 chat_sessions (FK → projects.id, CASCADE; FK → users.id, CASCADE)
   id (UUID, PK)
-  project_id (UUID, FK, indexed, nullable — null for Drive Chat)
-  user_id (UUID, FK, indexed, nullable — set for all sessions)
-  agent_type (ENUM: RAG|DRIVE, default=RAG)
-  gdrive_folder_id (VARCHAR 255, nullable — set for Drive Chat sessions)
+  project_id (UUID, FK, indexed, nullable)
+  user_id (UUID, FK, indexed, NOT NULL)
+  gdrive_folder_id (VARCHAR 255, nullable)
   title (VARCHAR 500, nullable)
   created_at, updated_at
 
@@ -327,40 +331,11 @@ messages (FK → chat_sessions.id, CASCADE)
   created_at (TIMESTAMP TZ, server_default=now())
 ```
 
-**Indexes**: `users.email` (unique), `projects.user_id`, `chat_sessions.project_id`, `messages.chat_session_id`.
+**Indexes**: `users.email` (unique), `projects.user_id`, `chat_sessions.project_id`, `chat_sessions.created_at`, `messages.chat_session_id`, `messages.created_at`, `projects.sync_status`.
+
+**Unique constraints**: `uq_projects_user_folder` (`user_id`, `gdrive_folder_id`) — prevents duplicate folder per user.
 
 **ORM**: SQLAlchemy 2.0 async with `Mapped[Type]` annotations, `DeclarativeBase`, `mapped_column`, `relationship(back_populates=..., cascade="all, delete-orphan")`.
-
----
-
-## Azure Search Index
-
-Index: `talk-to-folder-chunks` (configurable via `AZURE_SEARCH_INDEX_NAME`)
-
-| Field | Type | Attributes | Purpose |
-|-------|------|------------|---------|
-| `chunk_id` | String | **key**, filterable | Primary key |
-| `project_id` | String | filterable | Scope queries to project (multi-tenant isolation) |
-| `file_id` | String | filterable | Source file reference |
-| `file_name` | String | searchable, filterable | Source file name |
-| `file_type` | String | filterable | MIME-based file type |
-| `hierarchy` | String | searchable | File path within folder structure |
-| `source_url` | String | — | Google Drive web link |
-| `content` | String | searchable (`en.microsoft` analyzer) | Chunk text for keyword search |
-| `content_vector` | Collection(Single) | searchable, 1536-dim | Semantic embedding (ada-002) |
-| `questions` | Collection(String) | searchable | Generated hypothetical questions per chunk |
-| `questions_vector` | Collection(Single) | searchable, 1536-dim | Question embedding for query matching |
-| `keywords` | Collection(String) | searchable, filterable | Extracted keywords |
-| `section_heading` | String | searchable | Heading/section within document |
-| `page_number` | Int32 | filterable | Page number in source document |
-| `sheet_name` | String | filterable | Spreadsheet sheet name |
-| `created_at` | DateTimeOffset | — | Indexing timestamp |
-
-**Vector search**: HNSW algorithm (`default-hnsw`) with vector profile `default-vector-profile`.
-
-**Hybrid search**: Combines `search_text` (keyword) + `VectorizedQuery` on `content_vector` with `k_nearest_neighbors`. Filter on `project_id` (always) + optional `file_type`. Both `hybrid_search` and `search_within_file` use this pattern.
-
-**Neighbor lookup** (`get_chunk_with_neighbors`): Fetches all chunks for a file, finds target by `chunk_id`, returns previous + current + next chunks ordered by `chunk_id asc`.
 
 ---
 
@@ -370,18 +345,16 @@ Index: `talk-to-folder-chunks` (configurable via `AZURE_SEARCH_INDEX_NAME`)
 
 ReAct loop that answers questions by iteratively calling tools and reasoning.
 
-**Constructor args**: `llm_client`, `drive_service`, `search_service` (optional), `embeddings_service` (optional), `model` (default: `gpt-5.2`), `max_iterations` (default: 15), `tools` (optional, defaults to `ALL_TOOL_DEFINITIONS`), `system_prompt` (optional, defaults to `SYSTEM_PROMPT`).
+**Constructor args**: `llm_client`, `drive_service`, `model` (default: `gpt-5.2`), `max_iterations` (default: 15), `tools` (optional, defaults to `DRIVE_AGENT_TOOLS`), `system_prompt` (optional, defaults to `DRIVE_SYSTEM_PROMPT`).
 
 **`answer()` method**:
-1. Builds messages: `[self.system_prompt, ...chat_history, user_question]`
+1. Builds messages: `[system_prompt, ...chat_history, user_question]`
 2. Calls `llm_client.call_with_tools()` with `self.tools`
 3. If no tool calls → return final answer + accumulated citations
 4. If tool calls → execute each via `tool_executor.execute_tool()`, append results, continue loop
 5. If max iterations hit → return partial answer with warning text, `hit_limit=True`
 
-**Two system prompts**:
-- `SYSTEM_PROMPT` (RAG): Instructs agent to use `hybrid_search` as primary search, cite sources, handle spreadsheets/documents.
-- `DRIVE_SYSTEM_PROMPT` (Drive): Instructs agent to use `get_folder_structure` first (file names are usually descriptive enough), then go directly to the needed file. `search_drive` is a secondary fallback for content-based search when folder browsing isn't enough.
+**System prompt** (`DRIVE_SYSTEM_PROMPT`): Instructs agent to use `get_folder_structure` first (file names are usually descriptive enough), then go directly to the needed file. `search_drive` is a secondary fallback for content-based search when folder browsing isn't enough.
 
 **AgentResponse dataclass**: `content: str`, `citations: list[Citation]`, `iterations: int`, `hit_limit: bool`
 
@@ -402,28 +375,17 @@ Citations are accumulated across all tool calls in a single agent run and return
 
 ### Agent Tools (`services/agent_tools.py`)
 
-All defined in OpenAI function calling schema format (converted to Anthropic format by `LLMClient` when using Claude). Tools are split into groups: `RAG_ONLY_TOOLS` (4), `DRIVE_ONLY_TOOLS` (3), `SHARED_TOOLS` (9). Composed: `RAG_AGENT_TOOLS = RAG_ONLY + SHARED` (13), `DRIVE_AGENT_TOOLS = DRIVE_ONLY + SHARED` (12).
+All defined in OpenAI function calling schema format (converted to Responses API flat format by `LLMClient`). Tools are split into groups: `DRIVE_ONLY_TOOLS` (3), `SHARED_TOOLS` (9). Composed: `DRIVE_AGENT_TOOLS = DRIVE_ONLY + SHARED` (12).
 
-**RAG-only (require Azure AI Search index):**
-
-| # | Tool | Required Args | Optional Args | Description |
-|---|------|--------------|---------------|-------------|
-| # | Tool | Required Args | Optional Args | Description |
-|---|------|--------------|---------------|-------------|
-| 1 | `hybrid_search` | `query` | `file_types[]`, `top_k` (default 8, max 20) | Primary search across ALL files — hybrid text + vector |
-| 2 | `search_within_file` | `query`, `file_id` | `top_k` (default 5) | Search within a specific file |
-| 3 | `read_chunk_context` | `chunk_id` | — | Read a chunk + its previous/next neighbors |
-| 4 | `get_document_outline` | `file_id` | — | Table of contents from section headings |
-
-**Drive-only (use Google Drive API directly):**
+**Drive-only tools (use Google Drive API directly):**
 
 | # | Tool | Required Args | Optional Args | Description |
 |---|------|--------------|---------------|-------------|
-| 1 | `search_drive` | `query` | `file_types[]` | Secondary file search via Drive `fullText contains` keyword search (no citations — discovery only) |
+| 1 | `search_drive` | `query` | `file_types[]` | File search via Drive `fullText contains` keyword search (no citations — discovery only) |
 | 2 | `get_file_content` | `file_id` | `max_chars` (default 50000) | Download + parse full file text (PDF/DOCX/Docs/text) |
 | 3 | `search_within_file_text` | `file_id`, `query` | `context_chars` (default 200) | Case-insensitive text search within a downloaded file |
 
-**Shared tools (both agents):**
+**Shared tools:**
 
 | # | Tool | Required Args | Optional Args | Description |
 |---|------|--------------|---------------|-------------|
@@ -437,29 +399,34 @@ All defined in OpenAI function calling schema format (converted to Anthropic for
 | 8 | `report_inability` | `reason` | — | Report that the question can't be answered |
 | 9 | `request_clarification` | `question` | — | Ask user for more details |
 
-**Tool execution** (`tool_executor.py`): Dispatches to `_handle_*` async functions (16 total). RAG search tools embed the query via `embeddings_service.get_embedding()` before calling Azure Search. Drive tools call `drive_service` directly for file search/download/parsing. Spreadsheet tools download files via `_download_spreadsheet_bytes` (returns `bytes, file_name, mime_type, web_view_link`; caches in `tool_cache`) and parse with openpyxl. **Citation policy**: content-reading tools (`get_file_content`, `read_spreadsheet_rows`, `search_spreadsheet`, `get_column_stats`, `hybrid_search`, etc.) produce citations; discovery-only tools (`search_drive`, `get_folder_structure`, `get_file_metadata`) do not.
+**Tool execution** (`tool_executor.py`): Dispatches to `_handle_*` async functions (12 total). Drive tools call `drive_service` directly for file search/download/parsing. Spreadsheet tools download files via `_download_spreadsheet_bytes` (returns `bytes, file_name, mime_type, web_view_link`; caches in `tool_cache`) and parse with openpyxl. **Citation policy**: content-reading tools (`get_file_content`, `read_spreadsheet_rows`, `search_spreadsheet`, `get_column_stats`, etc.) produce citations; discovery-only tools (`search_drive`, `get_folder_structure`, `get_file_metadata`) do not.
 
-### LLM Multi-Provider (`services/llm.py`)
+### LLM Client (`services/llm.py`)
 
-`LLMClient` normalizes Anthropic and OpenAI to a common response format.
+`LLMClient` wraps the **OpenAI Responses API** (not Chat Completions) and normalizes output to a common format.
 
 **Provider selection**:
 - Anthropic support is currently disabled (TODO: re-enable)
-- All requests route to OpenAI (gpt-5.2 for agent, gpt-4o-mini for simple completion)
+- All requests route to OpenAI Responses API (gpt-5.2 for agent, gpt-4o-mini for simple completion)
 - Claude model names are remapped to gpt-5.2 in `_call_openai` as a safety fallback
+
+**OpenAI Responses API specifics**:
+- Passes `reasoning: {"effort": "xhigh"}` for extended thinking
+- Preserves `_raw_output_items` (including reasoning blocks) on `MessageContent` for multi-turn context — these are fed back as input items on subsequent turns
+- System message extracted and passed as `instructions=` parameter
+- Tools converted from nested Chat Completions format to flat Responses API format
+- Streaming: yields `text_delta` events only when no function calls detected (final answer), plus `response_complete` with full response
 
 **Normalized response structure** (dataclasses):
 ```
 LLMResponse → choices: [Choice → message: MessageContent → content: str | None, tool_calls: [ToolCall → id, function: FunctionCall → name, arguments]]
 ```
 
-**Anthropic conversion**:
-- System messages extracted and passed as `system=` parameter (not in messages array)
-- Assistant messages with tool_calls → `tool_use` content blocks
-- `role: "tool"` messages → `role: "user"` with `tool_result` content blocks; consecutive tool results merged into a single user message
-- Tool definitions: OpenAI `function.parameters` → Anthropic `input_schema`
-- `tool_choice` mapping: `"auto"` → `{"type": "auto"}`, `"required"` → `{"type": "any"}`
-- `max_tokens`: 4096, `temperature`: 0.1
+**Message conversion** (`_convert_messages_to_responses_api`):
+- System messages → `instructions` parameter
+- Assistant messages with `_raw_output_items` → re-injected as-is (preserves reasoning)
+- Assistant messages without raw items → reconstructed from content + tool_calls
+- Tool result messages → `function_call_output` items with `call_id` and `output`
 
 ---
 
@@ -482,68 +449,23 @@ Services are created per-request inside route handlers (not singletons). Credent
 
 ```python
 # In routers/chat.py — inside try/except
-from app.services import FolderAgent, LLMClient, AzureSearchService, EmbeddingsService, GoogleDriveService
+from app.services import FolderAgent, LLMClient, GoogleDriveService
 
 llm_client = LLMClient(anthropic_api_key=..., openai_api_key=...)
-search_service = AzureSearchService(endpoint=..., api_key=..., index_name=...)
-agent = FolderAgent(llm_client=llm_client, search_service=..., ...)
+drive_service = GoogleDriveService()
+agent = FolderAgent(llm_client=llm_client, drive_service=drive_service)
 ```
 
 ### Error Handling
 
 - **Routers**: `HTTPException` with explicit status codes (401, 404, 409, 422)
 - **Chat endpoint**: Entire agent call wrapped in try/except — returns placeholder message on failure (agent unavailable, service not configured, etc.)
-- **Project delete**: Azure index cleanup failure is non-fatal — project still deleted from DB
-- **Sync trigger**: Temporal connection failure → falls back to marking project COMPLETED (dev mode)
+- **Sync trigger**: Handles Drive API errors (401/403/timeout) by setting sync_status=FAILED with descriptive error
 - **Ownership checks**: Every endpoint with `{project_id}` or `{session_id}` verifies the resource belongs to the authenticated user (joins through Project.user_id)
 
 ### Schema Style
 
 Pydantic v2 with `ConfigDict(from_attributes=True)` for ORM serialization. Request schemas are minimal; response schemas mirror the model. Route handlers return ORM objects directly (FastAPI serializes via response_model).
-
----
-
-## Worker Patterns
-
-### Temporal Connection
-
-`worker/main.py` connects to Temporal with retries: up to 15 attempts, 3-second intervals. Registers all 6 activities and 1 workflow on task queue `talk-to-folder-sync`. Supports TLS via `TEMPORAL_API_KEY` env var (for Temporal Cloud).
-
-### Activity Structure
-
-All activities are `@activity.defn` async functions. No dependency injection — they read env vars directly via `os.environ.get()` and create their own httpx/SDK clients per invocation.
-
-### Workflow Orchestration
-
-`SyncFolderWorkflow` receives `SyncInput(project_id, folder_id, user_access_token, user_refresh_token)`.
-
-**Pipeline** (sequential per-file):
-
-| Step | Activity | Timeout | Retries | Notes |
-|------|----------|---------|---------|-------|
-| 0 | `refresh_google_token` | 30s | 1 | Proactive token refresh before pipeline starts (handles stale-token-on-replay) |
-| 1 | `crawl_folder` | 10 min | 1 | Recursive Drive listing. 401 → non-retryable `TOKEN_EXPIRED` |
-| 2a | `extract_content` | 5 min | 1 | Per file. 401 → refresh once → retry. If still fails → abort pipeline |
-| 2b | `chunk_content` | 2 min | 2 | Per file. See chunking strategy below |
-| 2c | `generate_embeddings` | 10 min | 3 | Per file. OpenAI ada-002, batch 20, 0.5s inter-batch delay |
-| 2d | `generate_questions` | 10 min | 2 | Per file. 3-5 questions via Claude Sonnet or GPT-4o-mini fallback, then embed |
-| 3 | `index_chunks` | 5 min | 3 | All files batched. 500 chunks per Temporal payload, 100 per Azure Search upload |
-
-Failed files are logged and skipped — processing continues with remaining files. Auth failures (401) abort the entire pipeline and mark the project FAILED with a user-facing error message.
-
-**Return value**: `{project_id, folder_id, total_files, processed_files, failed_files, indexed_chunks}`
-
-### Chunking Strategy (`activities/chunk_content.py`)
-
-- **Documents**: Split by markdown headings (`^#{1,6}\s+`) → sections. Each section: if ≤512 tokens → single chunk. If >512 tokens → split by paragraphs (double newline). If paragraph >512 tokens → fixed-window split (512 tokens, 50-token overlap using last 50 tokens of previous chunk prepended to next).
-- **Spreadsheets**: One chunk per sheet. If sheet >1024 tokens → fixed-window split.
-- **Tokenizer**: `tiktoken` cl100k_base encoding.
-- **Chunk metadata**: `chunk_id` (UUID), `text`, `file_id`, `file_name`, `file_type`, `hierarchy`, `source_url`, `section_heading`, `page_number`, `sheet_name`.
-
-### Embedding & Questions
-
-- **Embeddings** (`generate_embeddings.py`): OpenAI ada-002. Batch size 20. Text truncated to 32k chars. 0.5s inter-batch delay. Rate-limit retry: waits 10s, max 5 retries. Adds `content_vector` (1536-dim) to each chunk.
-- **Questions** (`generate_questions.py`): Uses GPT-4o-mini (Anthropic path disabled). Generates 3-5 hypothetical questions per chunk (text truncated to 6000 chars, temp 0.7, max 500 tokens). Strips numbering, validates question marks. Concatenated questions embedded with ada-002 (32k char truncation). Batch size 5, 1.0s delay. Empty questions/vectors on error. Adds `questions` (list[str]) + `questions_vector` (1536-dim).
 
 ---
 
@@ -555,7 +477,7 @@ Failed files are logged and skipped — processing continues with remaining file
 |---------|------|----------|
 | Auth (user session) | Zustand | `hooks/useAuth.ts` |
 | Theme (light/dark) | Zustand | `hooks/useTheme.ts` |
-| Server data (projects, sessions, messages) | React Query | `hooks/useProjects.ts`, `hooks/useChat.ts` |
+| Server data (projects, sessions, messages) | React Query | `hooks/useProjects.ts`, `hooks/useUnifiedChat.ts` |
 | Local UI (modals, inputs, temp messages) | useState | Component-level |
 
 **React Query config** (in `main.tsx`): `staleTime: 30s`, `retry: 1`, `refetchOnWindowFocus: false`.
@@ -563,7 +485,7 @@ Failed files are logged and skipped — processing continues with remaining file
 **React Query keys**:
 - `["projects"]` — all user projects
 - `["project-sync", projectId]` — sync status polling
-- `["chat-sessions", projectId]` — sessions for a project
+- `["drive-chat-sessions"]` — all chat sessions
 - `["chat-messages", sessionId]` — messages in a session
 
 ### Zustand Auth Store (`hooks/useAuth.ts`)
@@ -579,11 +501,11 @@ interface AuthState {
 }
 ```
 
-### Chat Hook (`hooks/useChat.ts`)
+### Chat Hook (`hooks/useUnifiedChat.ts`)
 
 Hybrid approach: local `useState` for new conversations (no session yet), React Query for existing sessions.
 
-- `sendMessage()`: Creates temp user message (optimistic update with `id: "temp-..."`) → calls API → on success: removes temp, sets session ID if new, adds real messages → on error: adds error assistant message
+- `sendMessage()`: Creates temp user message (optimistic update) → streams SSE response → accumulates deltas → commits session ID on completion
 - `selectSession(id)`: Switches to existing session (clears local buffer, React Query fetches messages)
 - `startNewChat()`: Clears session ID + local messages (starts fresh)
 - `allMessages`: returns `existingMessages` from React Query if session exists, else local `messages` state
@@ -591,14 +513,14 @@ Hybrid approach: local `useState` for new conversations (no session yet), React 
 ### Sync Polling (`hooks/useProjects.ts`)
 
 `useProjectSyncStatus` uses React Query's `refetchInterval` as a function:
-- If `sync_status === "SYNCING" || "PROCESSING"` → refetch every 3000ms
+- If `sync_status === "SYNCING"` → refetch every 3000ms
 - Otherwise → `false` (stop polling)
 
 ### API Layer (`services/api.ts`)
 
-Axios instance with `baseURL: ""` (Vite proxy handles routing), `withCredentials: true` (sends HTTPOnly session cookies). Response interceptor catches 401 → redirects to `/` if not already there.
+Axios instance with `baseURL: ""` (Vite proxy handles routing), `withCredentials: true` (sends HTTPOnly session cookies). Response interceptor catches 401 → dispatches `auth:session-expired` event.
 
-Functions follow `verb + noun`: `getProjects`, `createProject`, `deleteProject`, `triggerSync`, `getSyncStatus`, `getChatSessions`, `getMessages`, `sendMessage`, `getCurrentUser`, `login`, `logout`.
+SSE streaming via `streamChat()`: Uses `fetch()` API for SSE parsing. Events: `session` (new session ID), `status` (tool status text), `delta` (content chunk), `citations` (array), `done`.
 
 ### Component Conventions
 
@@ -606,18 +528,17 @@ Functions follow `verb + noun`: `getProjects`, `createProject`, `deleteProject`,
 - Early return for loading/error/empty states.
 - `useMemo` for expensive parsing (citation regex in `MessageBubble`).
 - **Two-step deletion** (`ProjectCard`): Click delete → shows confirm button → auto-cancels after 3 seconds via `setTimeout`.
-- **Auto-resize textarea** (`ChatInput`): Measures `scrollHeight`, sets height dynamically (max 160px ≈ 4 lines), resets after send. Enter sends, Shift+Enter adds newline.
+- **Auto-resize textarea** (`ChatInput`): Measures `scrollHeight`, sets height dynamically (max 160px), resets after send. Enter sends, Shift+Enter adds newline.
 - **Auto-scroll** (`MessageList`): `useRef` on container + `useEffect` scrolls to bottom on new messages.
 - **Citation parsing** (`MessageBubble`): Regex `sourcePattern = /\[source:\s*([^\]]+)\]|\[(\d+)\]/g` finds `[source: filename]` and `[1]` patterns in message content → replaces with `<CitationTooltip>` components. Wrapped in `useMemo`.
-- **Modal behavior** (`AddFolderModal`): Auto-focus name input on mount. Escape key closes. Backdrop blur with `bg-black/60`. Drive URL validation regex: `/^https:\/\/drive\.google\.com\/(drive\/)?folders\/[a-zA-Z0-9_-]+/`.
-- **Project filtering**: `ChatContainer` only shows projects where `sync_status === "COMPLETED"` in the project selector dropdown.
+- **Modal behavior** (`AddFolderModal`): Auto-focus name input on mount. Escape key closes. Backdrop blur with `bg-black/60`. Drive URL validation regex.
 
 ### Routing
 
-Three-tab layout behind auth gate:
+Two-tab layout behind auth gate:
 - `/knowledge` → `ProjectList` (manage Drive folders)
-- `/chat` → `ChatContainer` (RAG Chat — chat with indexed documents)
-- `/drive-chat` → `DriveChatContainer` (Drive Chat — live Drive API search, no pre-indexing)
+- `/chat` → `UnifiedChatContainer` (chat with Drive folders)
+- `/quick-search`, `/deep-search`, `/drive-chat` → redirect to `/chat` (backward compat)
 - `/*` → redirect to `/knowledge`
 - Unauthenticated → `LandingPage`
 
@@ -635,23 +556,21 @@ Dark/light theme via CSS variables + `darkMode: "class"`. Tailwind 3.4 with cust
 
 ## Environment Variables
 
-| Variable | Required | Used By | Description |
-|----------|----------|---------|-------------|
-| `DATABASE_URL` | Yes | API | PostgreSQL async connection string |
-| `GOOGLE_CLIENT_ID` | Yes | API | Google OAuth client ID |
-| `GOOGLE_CLIENT_SECRET` | Yes | API | Google OAuth client secret |
-| `GOOGLE_REDIRECT_URI` | Yes | API | OAuth callback URL (default: `http://localhost:8000/auth/google/callback`) |
-| `AZURE_SEARCH_ENDPOINT` | Yes | API, Worker | Azure AI Search endpoint URL |
-| `AZURE_SEARCH_API_KEY` | Yes | API, Worker | Azure AI Search admin key |
-| `AZURE_SEARCH_INDEX_NAME` | Yes | API, Worker | Index name (default: `talk-to-folder-chunks`) |
-| `OPENAI_API_KEY` | Yes | API, Worker | OpenAI key (embeddings + fallback LLM) |
-| `ANTHROPIC_API_KEY` | No | API, Worker | Unused — reserved for future re-enablement |
-| `TEMPORAL_HOST` | No | API, Worker | Temporal gRPC address (default: `localhost:7233`) |
-| `TEMPORAL_NAMESPACE` | No | API, Worker | Temporal namespace (default: `default`) |
-| `TEMPORAL_API_KEY` | No | Worker | Temporal Cloud API key (enables TLS) |
-| `ENCRYPTION_KEY` | Yes | API | Fernet key for token encryption at rest |
-| `FRONTEND_URL` | No | API | Frontend origin for OAuth redirect + cookie security (default: `http://localhost:5173`) |
-| `AZURE_STORAGE_CONNECTION_STRING` | No | API | Azure Blob Storage (optional, unused currently) |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Yes | PostgreSQL async connection string |
+| `GOOGLE_CLIENT_ID` | Yes | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Yes | Google OAuth client secret |
+| `GOOGLE_REDIRECT_URI` | Yes | OAuth callback URL (default: `http://localhost:8000/auth/google/callback`) |
+| `OPENAI_API_KEY` | Yes | OpenAI key (LLM reasoning) |
+| `ENCRYPTION_KEY` | Yes | Fernet key for token encryption at rest |
+| `FRONTEND_URL` | No | Frontend origin for OAuth redirect + cookie security (default: `http://localhost:5173`) |
+| `AZURE_STORAGE_CONNECTION_STRING` | No | Azure Blob Storage (optional, unused currently) |
+| `AGENT_MODEL` | No | LLM model for the agent (default: `gpt-5.2`) |
+| `MAX_SYNC_FILES` | No | Max files per folder sync (default: `5000`) |
+| `MAX_FOLDER_DEPTH` | No | Max folder recursion depth (default: `10`) |
+| `MAX_MESSAGE_LENGTH` | No | Max chat message length (default: `32000`) |
+| `MAX_CHAT_HISTORY_MESSAGES` | No | Max prior messages sent to agent (default: `100`) |
 
 ---
 
@@ -665,16 +584,6 @@ Multi-stage build:
 
 Entrypoint: `alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000`
 
-### Worker Image (`Dockerfile.worker`)
-
-Single-stage Python 3.12 slim with system deps: `poppler-utils` (PDF), `tesseract-ocr` (OCR), `libpq-dev`. Runs `python -m worker.main`.
-
-### docker-compose.yml
-
-4 services: `db` (Postgres 15 Alpine on :5432), `temporal` (auto-setup v1.22 on :7233/:8233), `app` (API on :8000), `worker`. Volume: `pgdata`.
-
-Health check: `db` uses `pg_isready`. `app` and `worker` depend on `db` (healthy) + `temporal` (started).
-
 ---
 
 ## Testing
@@ -687,10 +596,6 @@ Health check: `db` uses `pg_isready`. `app` and `worker` depend on `db` (healthy
 
 ## Known Limitations
 
-- **In-memory sessions**: `utils/security.py` stores sessions in a Python dict. Restarts lose all sessions. Multi-worker deploys need Redis or similar.
-- **Token refresh is proactive, not background**: `get_valid_access_token()` in `utils/security.py` checks `token_expires_at` and refreshes via Google's token endpoint before making Drive calls. Covers API endpoints and the sync workflow. However, there is no background cron/task that refreshes tokens ahead of time — refresh only happens when a Drive call is about to be made.
-- **`google_auth.py` service unused**: The OAuth helper service exists but all auth logic lives directly in `routers/auth.py`.
+- **In-memory revocation list**: `utils/security.py` sessions are stateless (Fernet tokens), but the `_revoked` dict for explicit logouts lives in-process memory. Multi-worker deploys would need a shared store (Redis) for logout propagation. Sessions still expire naturally via Fernet TTL even without revocation.
+- **Token refresh is proactive, not background**: `get_valid_access_token()` in `utils/security.py` checks `token_expires_at` and refreshes via Google's token endpoint before making Drive calls. However, there is no background cron/task that refreshes tokens ahead of time — refresh only happens when a Drive call is about to be made.
 - **No CI/CD pipeline**: No GitHub Actions, GitLab CI, or similar configured.
-- **Sequential file processing**: Worker processes files one at a time (not parallel). Large folders will be slow.
-- **Sync tokens in Temporal payload**: `routers/sync.py` passes decrypted Google tokens as plain text in the Temporal workflow input. These are visible in the Temporal UI. Consider encrypting the payload or using a token-exchange service.
-- **`Sidebar.tsx` unused**: Layout component exists but Header + TabNav are composed directly in `App.tsx`.

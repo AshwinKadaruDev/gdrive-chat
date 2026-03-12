@@ -164,7 +164,9 @@ class TestListFolder:
         assert result == []
 
     async def test_api_error_propagates(self):
-        """HTTP errors from the Drive API propagate as httpx.HTTPStatusError."""
+        """HTTP 403 from the Drive API propagates as DrivePermissionError."""
+        from app.services.google_drive import DrivePermissionError
+
         error_response = httpx.Response(403, json={"error": "forbidden"}, request=httpx.Request("GET", "http://test"))
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=error_response)
@@ -174,7 +176,7 @@ class TestListFolder:
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
 
             svc = GoogleDriveService()
-            with pytest.raises(httpx.HTTPStatusError):
+            with pytest.raises(DrivePermissionError):
                 await svc.list_folder("root", "token")
 
     async def test_shared_client_passed_to_recursive(self):

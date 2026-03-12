@@ -7,6 +7,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from app.services.agent import AgentResponse, FolderAgent
@@ -45,8 +46,6 @@ def _make_agent(llm_client=None, max_iterations=15):
     return FolderAgent(
         llm_client=llm_client,
         drive_service=AsyncMock(),
-        search_service=AsyncMock(),
-        embeddings_service=AsyncMock(),
         max_iterations=max_iterations,
     )
 
@@ -60,7 +59,7 @@ class TestAnswerNonStreaming:
         )
         agent = _make_agent(llm)
 
-        result = await agent.answer("What is the answer?", "proj-1", "token-1")
+        result = await agent.answer("What is the answer?", "proj-1", "token-1", session_id="sess-1")
 
         assert isinstance(result, AgentResponse)
         assert result.content == "The answer is 42."
@@ -78,7 +77,7 @@ class TestAnswerNonStreaming:
                 ToolCall(
                     id="tc-1",
                     function=FunctionCall(
-                        name="hybrid_search",
+                        name="search_drive",
                         arguments=json.dumps({"query": "revenue"}),
                     ),
                 )
@@ -99,7 +98,7 @@ class TestAnswerNonStreaming:
 
         with patch("app.services.agent.execute_tool", new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = ("Search results...", [citation])
-            result = await agent.answer("Revenue?", "proj-1", "token-1")
+            result = await agent.answer("Revenue?", "proj-1", "token-1", session_id="sess-1")
 
         assert result.iterations == 2
         assert len(result.citations) == 1
@@ -116,7 +115,7 @@ class TestAnswerNonStreaming:
                 ToolCall(
                     id="tc-1",
                     function=FunctionCall(
-                        name="hybrid_search",
+                        name="search_drive",
                         arguments=json.dumps({"query": "test"}),
                     ),
                 )
@@ -133,7 +132,7 @@ class TestAnswerNonStreaming:
 
         with patch("app.services.agent.execute_tool", new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = ("result", [citation])
-            result = await agent.answer("Q?", "proj-1", "token-1")
+            result = await agent.answer("Q?", "proj-1", "token-1", session_id="sess-1")
 
         assert result.hit_limit
         assert result.iterations == 2
@@ -142,10 +141,10 @@ class TestAnswerNonStreaming:
     async def test_llm_error_returns_graceful_response(self):
         """When the LLM call raises, agent returns a graceful error message."""
         llm = AsyncMock()
-        llm.call_with_tools = AsyncMock(side_effect=RuntimeError("API down"))
+        llm.call_with_tools = AsyncMock(side_effect=httpx.ConnectError("API down"))
 
         agent = _make_agent(llm)
-        result = await agent.answer("Q?", "proj-1", "token-1")
+        result = await agent.answer("Q?", "proj-1", "token-1", session_id="sess-1")
 
         assert "went wrong" in result.content
         assert result.iterations == 1
@@ -160,7 +159,7 @@ class TestAnswerNonStreaming:
                 ToolCall(
                     id="tc-1",
                     function=FunctionCall(
-                        name="hybrid_search",
+                        name="search_drive",
                         arguments="{bad json",
                     ),
                 )
@@ -175,7 +174,7 @@ class TestAnswerNonStreaming:
         agent = _make_agent(llm)
         # execute_tool should NOT be called for the bad JSON
         with patch("app.services.agent.execute_tool", new_callable=AsyncMock) as mock_exec:
-            result = await agent.answer("Q?", "proj-1", "token-1")
+            result = await agent.answer("Q?", "proj-1", "token-1", session_id="sess-1")
             mock_exec.assert_not_called()
 
         assert result.content == "I fixed it."
@@ -199,7 +198,7 @@ class TestAnswerStreaming:
 
         agent = _make_agent(llm)
         events = []
-        async for event_type, data in agent.answer_streaming("Hi", "proj-1", "token-1"):
+        async for event_type, data in agent.answer_streaming("Hi", "proj-1", "token-1", session_id="sess-1"):
             events.append((event_type, data))
 
         event_types = [e[0] for e in events]
@@ -214,7 +213,7 @@ class TestAnswerStreaming:
         llm = AsyncMock()
 
         async def failing_stream(**kwargs):
-            raise RuntimeError("Stream failed")
+            raise httpx.ConnectError("Stream failed")
             # Make it an async generator
             yield  # pragma: no cover
 
@@ -222,7 +221,7 @@ class TestAnswerStreaming:
 
         agent = _make_agent(llm)
         events = []
-        async for event_type, data in agent.answer_streaming("Hi", "proj-1", "token-1"):
+        async for event_type, data in agent.answer_streaming("Hi", "proj-1", "token-1", session_id="sess-1"):
             events.append((event_type, data))
 
         event_types = [e[0] for e in events]
@@ -246,7 +245,7 @@ class TestAnswerStreaming:
                         ToolCall(
                             id="tc-1",
                             function=FunctionCall(
-                                name="hybrid_search",
+                                name="search_drive",
                                 arguments=json.dumps({"query": "test"}),
                             ),
                         )
@@ -264,7 +263,7 @@ class TestAnswerStreaming:
         events = []
         with patch("app.services.agent.execute_tool", new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = ("result", [citation])
-            async for event_type, data in agent.answer_streaming("Q?", "proj-1", "token-1"):
+            async for event_type, data in agent.answer_streaming("Q?", "proj-1", "token-1", session_id="sess-1"):
                 events.append((event_type, data))
 
         # Find citations event

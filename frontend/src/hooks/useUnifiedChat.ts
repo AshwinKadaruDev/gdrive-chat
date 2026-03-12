@@ -1,42 +1,25 @@
 import { useState, useCallback, useRef } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import {
-  getChatSessions,
   getDriveChatSessions,
   getMessages,
   streamChat,
   deleteChatSession,
 } from "@/services/api";
-import type { Message, AgentType, Citation } from "@/types";
+import type { Message, Citation } from "@/types";
 
 interface UseChatOptions {
-  agentType: AgentType;
-  projectId: string | null;
   folderId: string | null;
 }
 
-export function useUnifiedChatSessions(
-  agentType: AgentType,
-  projectId: string | null
-) {
+export function useUnifiedChatSessions() {
   return useQuery({
-    queryKey:
-      agentType === "RAG"
-        ? ["chat-sessions", projectId]
-        : ["drive-chat-sessions"],
-    queryFn: () =>
-      agentType === "RAG"
-        ? getChatSessions(projectId!)
-        : getDriveChatSessions(),
-    enabled: agentType === "RAG" ? !!projectId : true,
+    queryKey: ["drive-chat-sessions"],
+    queryFn: () => getDriveChatSessions(),
   });
 }
 
-export function useUnifiedChat({
-  agentType,
-  projectId,
-  folderId,
-}: UseChatOptions) {
+export function useUnifiedChat({ folderId }: UseChatOptions) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -45,6 +28,7 @@ export function useUnifiedChat({
   const streamingContentRef = useRef("");
   const streamingSessionIdRef = useRef<string | null>(null);
   const existingMessagesRef = useRef<Message[] | undefined>(undefined);
+  const sendingRef = useRef(false);
 
   const { data: existingMessages } = useQuery({
     queryKey: ["chat-messages", sessionId],
@@ -54,6 +38,14 @@ export function useUnifiedChat({
 
   // Keep ref in sync so sendMessage can read the latest value
   existingMessagesRef.current = existingMessages;
+
+  // Reset chat state when the active folder changes
+  const prevIdRef = useRef(folderId);
+  if (prevIdRef.current !== folderId) {
+    prevIdRef.current = folderId;
+    setSessionId(null);
+    setMessages([]);
+  }
 
   // During streaming, always use local messages (which include streaming content).
   // Otherwise, prefer server data for existing sessions.
@@ -65,8 +57,9 @@ export function useUnifiedChat({
 
   const sendMessage = useCallback(
     async (content: string) => {
-      const id = agentType === "RAG" ? projectId : folderId;
-      if (!id || isLoading) return;
+      if (!folderId || isLoading) return;
+      if (sendingRef.current) return;
+      sendingRef.current = true;
 
       const userMessage: Message = {
         id: `user-${Date.now()}`,
@@ -99,14 +92,8 @@ export function useUnifiedChat({
       const params: Record<string, string | undefined> = {
         message: content,
         session_id: sessionId ?? undefined,
+        gdrive_folder_id: sessionId ? undefined : folderId!,
       };
-
-      if (agentType === "RAG") {
-        params.project_id = sessionId ? undefined : projectId!;
-      } else {
-        params.gdrive_folder_id = sessionId ? undefined : folderId!;
-        params.agent_type = "drive";
-      }
 
       try {
         await streamChat(params as Parameters<typeof streamChat>[0], {
@@ -148,10 +135,7 @@ export function useUnifiedChat({
               streamingSessionIdRef.current = null;
             }
             queryClient.invalidateQueries({
-              queryKey:
-                agentType === "RAG"
-                  ? ["chat-sessions", projectId]
-                  : ["drive-chat-sessions"],
+              queryKey: ["drive-chat-sessions"],
             });
             // Invalidate messages so fresh data loads when we switch
             // from local messages back to existingMessages
@@ -173,20 +157,24 @@ export function useUnifiedChat({
           },
         });
       } catch (error) {
+        const errorMsg = error instanceof TypeError
+          ? "Network error — please check your connection and try again."
+          : "Sorry, something went wrong. Please try again.";
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantId
-              ? { ...m, content: "Sorry, something went wrong. Please try again." }
+              ? { ...m, content: errorMsg }
               : m
           )
         );
         console.error("Failed to send message:", error);
       } finally {
+        sendingRef.current = false;
         setIsLoading(false);
         setStatusText(null);
       }
     },
-    [agentType, projectId, folderId, sessionId, isLoading, queryClient]
+    [folderId, sessionId, isLoading, queryClient]
   );
 
   const selectSession = useCallback((newSessionId: string | null) => {
@@ -210,19 +198,13 @@ export function useUnifiedChat({
   };
 }
 
-export function useDeleteChatSession(
-  agentType: AgentType,
-  projectId: string | null
-) {
+export function useDeleteChatSession() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (sessionId: string) => deleteChatSession(sessionId),
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey:
-          agentType === "RAG"
-            ? ["chat-sessions", projectId]
-            : ["drive-chat-sessions"],
+        queryKey: ["drive-chat-sessions"],
       });
     },
   });

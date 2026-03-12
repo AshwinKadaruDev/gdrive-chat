@@ -32,11 +32,6 @@ const statusConfig: Record<
     color: "text-brand-500",
     bgColor: "bg-brand-500/10",
   },
-  PROCESSING: {
-    label: "Processing",
-    color: "text-brand-500",
-    bgColor: "bg-brand-500/10",
-  },
   COMPLETED: {
     label: "Ready",
     color: "text-green-400",
@@ -54,9 +49,7 @@ export default function ProjectCard({ project }: ProjectCardProps) {
   const deleteProject = useDeleteProject();
   const syncProject = useSyncProject();
 
-  const isActive =
-    project.sync_status === "SYNCING" ||
-    project.sync_status === "PROCESSING";
+  const isActive = project.sync_status === "SYNCING";
 
   const { data: liveProject } = useProjectSyncStatus(
     isActive ? project.id : null
@@ -72,7 +65,9 @@ export default function ProjectCard({ project }: ProjectCardProps) {
 
   const handleDelete = () => {
     if (confirmDelete) {
-      deleteProject.mutate(project.id);
+      deleteProject.mutate(project.id, {
+        onError: () => setConfirmDelete(false),
+      });
     } else {
       setConfirmDelete(true);
       setTimeout(() => setConfirmDelete(false), 3000);

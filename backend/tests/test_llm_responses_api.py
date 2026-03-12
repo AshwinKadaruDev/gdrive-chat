@@ -30,7 +30,7 @@ SAMPLE_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "hybrid_search",
+            "name": "search_drive",
             "description": "Search documents.",
             "parameters": {
                 "type": "object",
@@ -65,7 +65,7 @@ class TestConvertToolsToResponsesAPI:
         assert len(result) == 2
         assert result[0] == {
             "type": "function",
-            "name": "hybrid_search",
+            "name": "search_drive",
             "description": "Search documents.",
             "parameters": {
                 "type": "object",
@@ -138,7 +138,7 @@ class TestConvertMessagesToResponsesAPI:
                     {
                         "id": "call_abc",
                         "type": "function",
-                        "function": {"name": "hybrid_search", "arguments": '{"query": "revenue"}'},
+                        "function": {"name": "search_drive", "arguments": '{"query": "revenue"}'},
                     }
                 ],
             }
@@ -154,7 +154,7 @@ class TestConvertMessagesToResponsesAPI:
         assert items[1] == {
             "type": "function_call",
             "call_id": "call_abc",
-            "name": "hybrid_search",
+            "name": "search_drive",
             "arguments": '{"query": "revenue"}',
         }
 
@@ -202,7 +202,7 @@ class TestNormalizeOpenAIResponse:
     def test_function_calls(self):
         response = SimpleNamespace(
             output=[
-                _make_function_call_item("fc_1", "hybrid_search", '{"query": "revenue"}'),
+                _make_function_call_item("fc_1", "search_drive", '{"query": "revenue"}'),
                 _make_function_call_item("fc_2", "get_file_content", '{"file_id": "abc"}'),
             ]
         )
@@ -212,7 +212,7 @@ class TestNormalizeOpenAIResponse:
         assert msg.content is None
         assert len(msg.tool_calls) == 2
         assert msg.tool_calls[0].id == "fc_1"
-        assert msg.tool_calls[0].function.name == "hybrid_search"
+        assert msg.tool_calls[0].function.name == "search_drive"
         assert msg.tool_calls[1].id == "fc_2"
         assert msg.tool_calls[1].function.arguments == '{"file_id": "abc"}'
 
@@ -284,7 +284,7 @@ class TestCallOpenAI:
         assert call_kwargs["instructions"] == "Be helpful."
         assert call_kwargs["reasoning"] == {"effort": "xhigh"}
         assert len(call_kwargs["tools"]) == 2
-        assert call_kwargs["tools"][0]["name"] == "hybrid_search"
+        assert call_kwargs["tools"][0]["name"] == "search_drive"
         # tool_choice should NOT be passed when "auto" (default)
         assert "tool_choice" not in call_kwargs
 

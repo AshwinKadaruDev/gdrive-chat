@@ -8,7 +8,7 @@ class Base(DeclarativeBase):
 
 from app.models.user import User
 from app.models.project import Project, ProjectStatus
-from app.models.chat import AgentType, ChatSession
+from app.models.chat import ChatSession
 from app.models.message import Message, MessageRole
 
 __all__ = [
@@ -16,7 +16,6 @@ __all__ = [
     "User",
     "Project",
     "ProjectStatus",
-    "AgentType",
     "ChatSession",
     "Message",
     "MessageRole",

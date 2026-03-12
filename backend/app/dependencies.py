@@ -38,6 +38,15 @@ def _init_db() -> async_sessionmaker[AsyncSession]:
     return _async_session_factory
 
 
+async def dispose_engine() -> None:
+    """Dispose the async engine on shutdown."""
+    global _engine, _async_session_factory
+    if _engine is not None:
+        await _engine.dispose()
+        _engine = None
+        _async_session_factory = None
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Yield an async database session, rolling back on error."""
     factory = _init_db()

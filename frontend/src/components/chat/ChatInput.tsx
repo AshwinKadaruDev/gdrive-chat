@@ -54,6 +54,7 @@ export default function ChatInput({
             placeholder="Ask a question about your documents..."
             disabled={isLoading || disabled}
             rows={1}
+            aria-label="Message input"
             className="max-h-[7.5rem] min-h-[1.75rem] w-full resize-none bg-transparent text-[15px] leading-relaxed text-fg-primary placeholder-surface-100/60 focus:outline-none disabled:opacity-50"
           />
           <div className="flex items-center justify-between pt-2">
@@ -63,6 +64,7 @@ export default function ChatInput({
             <button
               onClick={handleSubmit}
               disabled={!value.trim() || isLoading || disabled}
+              aria-label="Send message"
               className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-fg-primary text-fg-inverted transition-colors hover:bg-brand-500 disabled:opacity-30"
             >
               <Send className="h-4 w-4" />

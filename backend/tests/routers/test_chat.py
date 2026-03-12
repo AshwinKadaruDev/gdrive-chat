@@ -36,8 +36,6 @@ def _make_mock_session():
     session.id = uuid.UUID("00000000-0000-0000-0000-000000000010")
     session.project_id = uuid.UUID("00000000-0000-0000-0000-000000000020")
     session.user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-    session.agent_type = MagicMock()
-    session.agent_type.value = "RAG"
     session.gdrive_folder_id = None
     session.title = "Test Chat"
     session.created_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
@@ -113,7 +111,7 @@ class TestChatPost:
         try:
             resp = await chat_client.post(
                 "/api/chat/",
-                json={"message": "hello", "agent_type": "rag"},
+                json={"message": "hello"},
             )
             assert resp.status_code == 422
         finally:

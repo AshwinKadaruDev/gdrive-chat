@@ -12,7 +12,7 @@ Write-Host ""
 # ---------------------------------------------------------------
 # 1. Check prerequisites
 # ---------------------------------------------------------------
-Write-Host "[1/9] Checking prerequisites..." -ForegroundColor Yellow
+Write-Host "[1/7] Checking prerequisites..." -ForegroundColor Yellow
 
 # Check Python
 try {
@@ -53,36 +53,6 @@ try {
     Write-Host "  uv: not found (using pip instead)" -ForegroundColor Gray
 }
 
-# Check for Temporal CLI (optional)
-$hasTemporalCli = $false
-try {
-    $temporalVersion = temporal --version 2>$null
-    if ($temporalVersion) {
-        Write-Host "  Temporal CLI: $temporalVersion" -ForegroundColor Green
-        $hasTemporalCli = $true
-    } else {
-        Write-Host "  Temporal CLI: not found" -ForegroundColor Gray
-    }
-} catch {
-    Write-Host "  Temporal CLI: not found" -ForegroundColor Gray
-}
-
-# Check for Docker (needed if Temporal CLI is not installed)
-if (-not $hasTemporalCli) {
-    try {
-        $dockerVersion = docker --version 2>$null
-        if ($dockerVersion) {
-            Write-Host "  Docker: $dockerVersion (will use for Temporal dev server)" -ForegroundColor Green
-        } else {
-            Write-Host "  WARNING: Neither Temporal CLI nor Docker found." -ForegroundColor Yellow
-            Write-Host "  Install one of them for the sync worker. See https://docs.temporal.io/cli" -ForegroundColor Yellow
-        }
-    } catch {
-        Write-Host "  WARNING: Neither Temporal CLI nor Docker found." -ForegroundColor Yellow
-        Write-Host "  Install one of them for the sync worker. See https://docs.temporal.io/cli" -ForegroundColor Yellow
-    }
-}
-
 Write-Host ""
 
 # ---------------------------------------------------------------
@@ -93,7 +63,7 @@ $PipExe = "$VenvPath\Scripts\pip.exe"
 $PythonExe = "$VenvPath\Scripts\python.exe"
 
 if (-not (Test-Path $VenvPath)) {
-    Write-Host "[2/9] Creating Python virtual environment..." -ForegroundColor Yellow
+    Write-Host "[2/7] Creating Python virtual environment..." -ForegroundColor Yellow
     python -m venv $VenvPath
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: Failed to create virtual environment." -ForegroundColor Red
@@ -101,13 +71,13 @@ if (-not (Test-Path $VenvPath)) {
     }
     Write-Host "  Virtual environment created at backend\venv" -ForegroundColor Green
 } else {
-    Write-Host "[2/9] Virtual environment already exists." -ForegroundColor Green
+    Write-Host "[2/7] Virtual environment already exists." -ForegroundColor Green
 }
 
 # ---------------------------------------------------------------
 # 3. Install backend Python dependencies
 # ---------------------------------------------------------------
-Write-Host "[3/9] Installing backend dependencies..." -ForegroundColor Yellow
+Write-Host "[3/7] Installing backend dependencies..." -ForegroundColor Yellow
 if ($useUv) {
     uv pip install --python $PythonExe -r "$ProjectRoot\backend\requirements.txt" --quiet
 } else {
@@ -119,23 +89,10 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "  Backend dependencies installed." -ForegroundColor Green
 
-# Install worker dependencies (same venv)
-Write-Host "  Installing worker dependencies..." -ForegroundColor Gray
-if ($useUv) {
-    uv pip install --python $PythonExe -r "$ProjectRoot\worker\requirements.txt" --quiet
-} else {
-    & $PipExe install -r "$ProjectRoot\worker\requirements.txt" --quiet
-}
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  ERROR: Failed to install worker dependencies." -ForegroundColor Red
-    exit 1
-}
-Write-Host "  Worker dependencies installed." -ForegroundColor Green
-
 # ---------------------------------------------------------------
 # 4. Install frontend dependencies
 # ---------------------------------------------------------------
-Write-Host "[4/9] Installing frontend dependencies..." -ForegroundColor Yellow
+Write-Host "[4/7] Installing frontend dependencies..." -ForegroundColor Yellow
 Push-Location "$ProjectRoot\frontend"
 
 if (Test-Path "node_modules") {
@@ -154,7 +111,7 @@ Write-Host "  Frontend dependencies installed." -ForegroundColor Green
 # ---------------------------------------------------------------
 # 5. Create .env from .env.example if it doesn't exist
 # ---------------------------------------------------------------
-Write-Host "[5/9] Checking .env file..." -ForegroundColor Yellow
+Write-Host "[5/7] Checking .env file..." -ForegroundColor Yellow
 $EnvFile = "$ProjectRoot\.env"
 $EnvExample = "$ProjectRoot\.env.example"
 $envCreated = $false
@@ -174,7 +131,7 @@ if (-not (Test-Path $EnvFile)) {
 # ---------------------------------------------------------------
 # 6. Create .env.production from template if it doesn't exist
 # ---------------------------------------------------------------
-Write-Host "[6/9] Checking .env.production file..." -ForegroundColor Yellow
+Write-Host "[6/7] Checking .env.production file..." -ForegroundColor Yellow
 $EnvProdFile = "$ProjectRoot\.env.production"
 $EnvProdExample = "$ProjectRoot\.env.production.example"
 $envProdCreated = $false
@@ -194,7 +151,7 @@ if (-not (Test-Path $EnvProdFile)) {
 # ---------------------------------------------------------------
 # 7. Generate secrets if not already in .env
 # ---------------------------------------------------------------
-Write-Host "[7/9] Checking security keys..." -ForegroundColor Yellow
+Write-Host "[7/7] Checking security keys..." -ForegroundColor Yellow
 
 $envContent = Get-Content $EnvFile -Raw -ErrorAction SilentlyContinue
 
@@ -216,9 +173,9 @@ if ($envContent) {
 }
 
 # ---------------------------------------------------------------
-# 8. Create database and run migrations
+# 6. Create database and run migrations
 # ---------------------------------------------------------------
-Write-Host "[8/9] Setting up database..." -ForegroundColor Yellow
+Write-Host "[6/7] Setting up database..." -ForegroundColor Yellow
 
 # Try to create the PostgreSQL database (requires psql on PATH)
 try {
@@ -266,9 +223,9 @@ try {
 Pop-Location
 
 # ---------------------------------------------------------------
-# 9. Ensure test scaffolding exists
+# 7. Ensure test scaffolding exists
 # ---------------------------------------------------------------
-Write-Host "[9/9] Ensuring test infrastructure..." -ForegroundColor Yellow
+Write-Host "[7/7] Ensuring test infrastructure..." -ForegroundColor Yellow
 
 # Backend tests directory
 $BackendTestsDir = "$ProjectRoot\backend\tests"
@@ -312,9 +269,7 @@ $nextStep = 1
 if ($envCreated) {
     Write-Host "  $nextStep. Edit .env with your real API keys:" -ForegroundColor White
     Write-Host "     - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (required for login)" -ForegroundColor Gray
-    Write-Host "     - AZURE_SEARCH_ENDPOINT / AZURE_SEARCH_API_KEY" -ForegroundColor Gray
     Write-Host "     - OPENAI_API_KEY" -ForegroundColor Gray
-    Write-Host "     - ANTHROPIC_API_KEY (optional)" -ForegroundColor Gray
     Write-Host ""
     $nextStep++
     Write-Host "  $nextStep. Create 'talk_to_folder' database in PG Admin if not done" -ForegroundColor White
@@ -324,7 +279,7 @@ if ($envCreated) {
 if ($envProdCreated) {
     Write-Host "  $nextStep. Edit .env.production with your Supabase connection string:" -ForegroundColor White
     Write-Host "     - DATABASE_URL (Session Pooler URL from Supabase dashboard)" -ForegroundColor Gray
-    Write-Host "     - Plus all production API keys (Google, Azure Search, OpenAI, etc.)" -ForegroundColor Gray
+    Write-Host "     - Plus all production API keys (Google, OpenAI, etc.)" -ForegroundColor Gray
     Write-Host ""
     $nextStep++
 }

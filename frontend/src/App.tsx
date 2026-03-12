@@ -15,18 +15,18 @@ function AuthenticatedLayout() {
       <main className="flex-1 overflow-hidden">
         <Routes>
           <Route path="/knowledge" element={<ProjectList />} />
-          <Route
-            path="/deep-search"
-            element={<UnifiedChatContainer agentType="RAG" />}
-          />
+          <Route path="/chat" element={<UnifiedChatContainer />} />
           <Route
             path="/quick-search"
-            element={<UnifiedChatContainer agentType="DRIVE" />}
+            element={<Navigate to="/chat" replace />}
           />
-          <Route path="/chat" element={<Navigate to="/deep-search" replace />} />
+          <Route
+            path="/deep-search"
+            element={<Navigate to="/chat" replace />}
+          />
           <Route
             path="/drive-chat"
-            element={<Navigate to="/quick-search" replace />}
+            element={<Navigate to="/chat" replace />}
           />
           <Route path="*" element={<Navigate to="/knowledge" replace />} />
         </Routes>

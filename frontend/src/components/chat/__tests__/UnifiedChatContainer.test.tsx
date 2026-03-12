@@ -17,7 +17,7 @@ const completedProject = {
   created_at: "2025-01-01T00:00:00Z",
 };
 
-const mockUseProjects = vi.fn(() => ({
+const mockUseProjects = vi.fn((): Record<string, unknown> => ({
   data: [completedProject],
   isLoading: false,
 }));
@@ -51,56 +51,53 @@ vi.mock("@/services/api", () => ({
   getProjects: vi.fn().mockResolvedValue([]),
 }));
 
-function renderWith(agentType: "RAG" | "DRIVE") {
+function renderComponent() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <UnifiedChatContainer agentType={agentType} />
+        <UnifiedChatContainer />
       </MemoryRouter>
     </QueryClientProvider>
   );
 }
 
 describe("UnifiedChatContainer", () => {
-  it("renders folder picker for RAG mode", () => {
-    renderWith("RAG");
+  it("renders folder picker", () => {
+    renderComponent();
     expect(screen.getByText("What would you like to chat about?")).toBeInTheDocument();
     expect(screen.getByText("My Folder")).toBeInTheDocument();
   });
 
-  it("renders folder picker for DRIVE mode", () => {
-    renderWith("DRIVE");
-    expect(screen.getByText("What would you like to chat about?")).toBeInTheDocument();
-  });
-
   it("shows add new folder option in picker", () => {
-    renderWith("RAG");
+    renderComponent();
     expect(screen.getByText("Add new folder...")).toBeInTheDocument();
   });
 
   it("renders New Chat button in sidebar", () => {
-    renderWith("RAG");
+    renderComponent();
     expect(screen.getByText("New Chat")).toBeInTheDocument();
   });
 
   it("renders history label in sidebar", () => {
-    renderWith("RAG");
+    renderComponent();
     expect(screen.getByText("History")).toBeInTheDocument();
   });
 
   it("shows add-folder CTA when no qualified projects exist", () => {
     mockUseProjects.mockReturnValue({ data: [], isLoading: false });
-    renderWith("DRIVE");
+    renderComponent();
     expect(screen.getByText("No folders connected")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add a folder/i })).toBeInTheDocument();
     mockUseProjects.mockReturnValue({ data: [completedProject], isLoading: false });
   });
 
-  it("renders 'Add new folder' option in folder picker", () => {
-    renderWith("DRIVE");
-    expect(screen.getByText("Add new folder...")).toBeInTheDocument();
+  it("shows error state when projects fail to load", () => {
+    mockUseProjects.mockReturnValue({ data: [], isLoading: false, error: new Error("fail") });
+    renderComponent();
+    expect(screen.getByText("Failed to load folders")).toBeInTheDocument();
+    mockUseProjects.mockReturnValue({ data: [completedProject], isLoading: false });
   });
 });

@@ -20,12 +20,13 @@ export default function ProjectSelector({
 }: ProjectSelectorProps) {
   return (
     <div className="relative">
-      <label className="mb-1 block text-xs font-medium text-surface-100">
+      <label htmlFor="project-selector" className="mb-1 block text-xs font-medium text-surface-100">
         {label}
       </label>
       <div className="relative">
         <FolderOpen className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-surface-100" />
         <select
+          id="project-selector"
           value={selected?.id ?? ""}
           onChange={(e) => {
             if (e.target.value === "__add_new__") {

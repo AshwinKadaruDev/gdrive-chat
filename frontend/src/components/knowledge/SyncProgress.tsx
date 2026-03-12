@@ -15,11 +15,9 @@ export default function SyncProgress({ project }: SyncProgressProps) {
   const statusLabel =
     sync_status === "SYNCING"
       ? "Downloading files from Google Drive..."
-      : sync_status === "PROCESSING"
-        ? "Processing and indexing documents..."
-        : sync_status === "FAILED"
-          ? "Sync failed"
-          : "Preparing...";
+      : sync_status === "FAILED"
+        ? "Sync failed"
+        : "Preparing...";
 
   if (sync_status === "FAILED") {
     return (

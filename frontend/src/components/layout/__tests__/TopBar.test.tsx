@@ -29,20 +29,18 @@ function renderTopBar() {
 }
 
 describe("TopBar", () => {
-  it("renders all three tabs", () => {
+  it("renders both tabs", () => {
     renderTopBar();
     expect(screen.getByText("Knowledge")).toBeInTheDocument();
-    expect(screen.getByText("Deep Search")).toBeInTheDocument();
-    expect(screen.getByText("Quick Search")).toBeInTheDocument();
+    expect(screen.getByText("Chat")).toBeInTheDocument();
   });
 
   it("renders correct navigation links", () => {
     renderTopBar();
     const links = screen.getAllByRole("link");
-    expect(links).toHaveLength(3);
+    expect(links).toHaveLength(2);
     expect(links[0]).toHaveAttribute("href", "/knowledge");
-    expect(links[1]).toHaveAttribute("href", "/deep-search");
-    expect(links[2]).toHaveAttribute("href", "/quick-search");
+    expect(links[1]).toHaveAttribute("href", "/chat");
   });
 
   it("renders user info", () => {

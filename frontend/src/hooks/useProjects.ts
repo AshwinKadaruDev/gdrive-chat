@@ -22,7 +22,7 @@ export function useProjectSyncStatus(projectId: string | null) {
     enabled: !!projectId,
     refetchInterval: (query) => {
       const status = query.state.data?.sync_status;
-      if (status === "SYNCING" || status === "PROCESSING") {
+      if (status === "SYNCING") {
         return 3000;
       }
       return false;

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 import urllib.parse
 from datetime import datetime, timezone
@@ -118,7 +119,13 @@ async def google_callback(
             detail="Failed to exchange authorization code for tokens",
         )
 
-    token_data = token_response.json()
+    try:
+        token_data = token_response.json()
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Invalid response from Google token endpoint",
+        )
     access_token: str = token_data["access_token"]
     refresh_token: str | None = token_data.get("refresh_token")
     expires_in: int | None = token_data.get("expires_in")
@@ -136,7 +143,13 @@ async def google_callback(
             detail="Failed to fetch user info from Google",
         )
 
-    userinfo = userinfo_response.json()
+    try:
+        userinfo = userinfo_response.json()
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Invalid response from Google userinfo endpoint",
+        )
     email: str = userinfo["email"]
     name: str = userinfo.get("name", email)
     picture_url: str | None = userinfo.get("picture")

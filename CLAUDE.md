@@ -13,15 +13,13 @@
 ## Architecture
 
 - **Codebase Map**: See `CODEBASE.md` for the full file tree, patterns, and env vars — read it before non-trivial work. Update it when you add/remove/move files or change architecture.
-- **Product**: Google Drive document chatbot — users connect a Drive folder, it gets indexed (chunked + embedded), and they chat with an AI agent that searches and reasons over the documents.
+- **Product**: Google Drive document chatbot — users connect a Drive folder and chat with an AI agent that searches and reasons over their documents in real time via the Google Drive API.
 - **Backend**: FastAPI + Pydantic v2 — `backend/app/`
 - **Frontend**: React 18 + TypeScript + Vite + Tailwind — `frontend/src/`
 - **Auth**: Google OAuth → encrypted tokens → HTTPOnly session cookie. Backend dependency `get_current_user` in `dependencies.py`. Frontend Zustand store `useAuth` + Axios 401 interceptor.
-- **LLM**: Claude (preferred) or GPT-4o fallback via `backend/app/services/llm.py`. FolderAgent (`services/agent.py`) runs a ReAct loop with 13 tools for document search, reading, and spreadsheet ops.
+- **LLM**: Claude (preferred) or GPT-4o fallback via `backend/app/services/llm.py`. FolderAgent (`services/agent.py`) runs a ReAct loop with 12 tools for document search, reading, and spreadsheet ops.
 - **Data**: PostgreSQL via SQLAlchemy async + asyncpg. Alembic for migrations. Models in `backend/app/models/`. 4 tables: users, projects, chat_sessions, messages.
-- **Search**: Azure AI Search (hybrid vector + keyword) via `services/azure_search.py`. OpenAI embeddings (ada-002) via `services/embeddings.py`.
-- **Ingestion**: Temporal worker (`worker/`) runs a durable pipeline: crawl Drive folder → extract text (PDF/DOCX/XLSX/OCR) → chunk → embed → generate questions → index into Azure Search.
-- **Deployment**: Two Docker images — API (`Dockerfile`) and Worker (`Dockerfile.worker`). Two Azure App Services. Shared Postgres + Temporal Cloud namespace.
+- **Deployment**: Single Docker image — API (`Dockerfile`). Azure App Service + Postgres.
 
 ## Project Layout
 
@@ -33,15 +31,9 @@ backend/app/
   models/                # SQLAlchemy ORM (user, project, chat, message)
   schemas/               # Pydantic request/response models
   routers/               # auth, projects, chat, sync
-  services/              # agent, agent_tools, tool_executor, llm, azure_search,
-                         #   embeddings, google_drive, google_auth
+  services/              # agent, agent_tools, tool_executor, llm,
+                         #   google_drive, google_auth
   utils/                 # security (encryption, sessions), file_parsers
-
-worker/
-  main.py                # Temporal worker entrypoint
-  activities/            # crawl_folder, extract_content, chunk_content,
-                         #   generate_embeddings, generate_questions, index_chunks
-  workflows/             # SyncFolderWorkflow orchestrator
 
 frontend/src/
   App.tsx                # Routing (Knowledge / Chat tabs)
@@ -55,7 +47,7 @@ frontend/src/
 
 ```bash
 # Dev servers
-.\run.ps1                                        # start all 4 services (Temporal, backend, worker, frontend)
+.\run.ps1                                        # start backend + frontend
 
 # Backend
 cd backend && python -m pytest --tb=short -q     # run backend tests
@@ -69,8 +61,7 @@ cd frontend && npx tsc --noEmit                   # type check
 
 ## Don't
 
-- Don't add new env vars without updating `.env.example`, both Dockerfiles, `docker-compose.yml`, and the env var table in `CODEBASE.md`.
-- Don't create synchronous DB sessions in Temporal activities — use async sessions.
+- Don't add new env vars without updating `.env.example`, `Dockerfile`, and the env var table in `CODEBASE.md`.
 - Don't use `window.location.href` for navigation in React — use router navigation or dispatch events.
 - Don't paste large code blocks into CLAUDE.md — reference file paths instead.
 

@@ -6,8 +6,9 @@ import logging
 import re
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -120,12 +121,16 @@ async def validate_folder(
 async def list_projects(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ):
     """Return all projects belonging to the current user."""
     result = await db.execute(
         select(Project)
         .where(Project.user_id == user.id)
         .order_by(Project.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
     return result.scalars().all()
 
@@ -197,7 +202,15 @@ async def create_project(
         files_total=files_total,
     )
     db.add(project)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This folder has already been added.",
+            headers={"X-Error-Code": "duplicate"},
+        )
     logger.info(
         "[PROJECT] Created project id=%s name=%s folder_id=%s files_total=%d",
         project.id, project.name, project.gdrive_folder_id, project.files_total,
@@ -226,27 +239,8 @@ async def delete_project(
     project_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    settings: Settings = Depends(get_settings),
 ):
-    """
-    Delete a project and remove its documents from the Azure AI Search index.
-    """
+    """Delete a project and all associated data."""
     project = await _get_user_project(project_id, user, db)
-
-    # Attempt to clean up the Azure AI Search index for this project.
-    try:
-        from app.services import AzureSearchService
-
-        search_service = AzureSearchService(
-            endpoint=settings.AZURE_SEARCH_ENDPOINT,
-            api_key=settings.AZURE_SEARCH_API_KEY,
-            index_name=settings.AZURE_SEARCH_INDEX_NAME,
-        )
-        await search_service.delete_by_project(str(project_id))
-    except Exception:
-        # Non-fatal – the project is still deleted from the database even if
-        # index cleanup fails (e.g. service not configured yet).
-        pass
-
     await db.delete(project)
     await db.flush()

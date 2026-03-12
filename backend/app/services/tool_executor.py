@@ -11,9 +11,28 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+_INJECTION_TAG_RE = re.compile(
+    r"</?(?:SYSTEM|ADMIN|INSTRUCTION|TOOL_RESULT|OVERRIDE)[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_for_agent(text: str) -> str:
+    """Strip tags that could be used for prompt injection."""
+    return _INJECTION_TAG_RE.sub("", text)
+
+
+def _require_arg(tool_args: dict, name: str) -> tuple[str | None, str | None]:
+    """Return (value, None) if present, or (None, error_string) if missing."""
+    val = tool_args.get(name)
+    if val is None or (isinstance(val, str) and not val.strip()):
+        return None, f"Error: '{name}' argument is required."
+    return val, None
 
 
 @dataclass
@@ -33,9 +52,7 @@ async def execute_tool(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     """
@@ -45,13 +62,9 @@ async def execute_tool(
     taken from the model's arguments.
     """
     handlers = {
-        "hybrid_search": _handle_hybrid_search,
-        "search_within_file": _handle_search_within_file,
         "get_folder_structure": _handle_get_folder_structure,
         "get_file_metadata": _handle_get_file_metadata,
         "read_document_pages": _handle_read_document_pages,
-        "read_chunk_context": _handle_read_chunk_context,
-        "get_document_outline": _handle_get_document_outline,
         "get_spreadsheet_overview": _handle_get_spreadsheet_overview,
         "read_spreadsheet_rows": _handle_read_spreadsheet_rows,
         "search_spreadsheet": _handle_search_spreadsheet,
@@ -75,9 +88,7 @@ async def execute_tool(
             tool_args=tool_args,
             project_id=project_id,
             access_token=access_token,
-            search_service=search_service,
             drive_service=drive_service,
-            embeddings_service=embeddings_service,
             tool_cache=tool_cache,
         )
         logger.info(
@@ -86,8 +97,9 @@ async def execute_tool(
         )
         return result_str, citations
     except Exception as exc:
-        logger.exception("[TOOL] Error executing %s: %s", tool_name, exc)
-        return f"Error executing {tool_name}: {exc}", []
+        truncated_args = {k: str(v)[:200] for k, v in tool_args.items()}
+        logger.exception("[TOOL] %s failed (args=%s): %s: %s", tool_name, truncated_args, type(exc).__name__, exc)
+        return f"Error executing {tool_name}: {type(exc).__name__}: {exc}", []
 
 
 # ------------------------------------------------------------------ #
@@ -95,131 +107,11 @@ async def execute_tool(
 # ------------------------------------------------------------------ #
 
 
-async def _handle_hybrid_search(
-    tool_args: dict,
-    project_id: str,
-    access_token: str,
-    search_service: "AzureSearchService",
-    drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
-    tool_cache: dict | None = None,
-) -> tuple[str, list[Citation]]:
-    query = tool_args["query"]
-    file_types = tool_args.get("file_types")
-    top_k = tool_args.get("top_k", 8)
-
-    query_vector = await embeddings_service.get_embedding(query)
-    results = await search_service.hybrid_search(
-        query=query,
-        query_vector=query_vector,
-        project_id=project_id,
-        file_types=file_types,
-        top_k=min(top_k, 20),
-    )
-
-    if not results:
-        return "No results found.", []
-
-    citations: list[Citation] = []
-    formatted_parts: list[str] = []
-    for i, r in enumerate(results, 1):
-        location_parts: list[str] = []
-        if r.get("section_heading"):
-            location_parts.append(f"Section: {r['section_heading']}")
-        if r.get("page_number"):
-            location_parts.append(f"Page {r['page_number']}")
-        if r.get("sheet_name"):
-            location_parts.append(f"Sheet: {r['sheet_name']}")
-        location = ", ".join(location_parts) if location_parts else None
-
-        content = r.get("content", "")
-        snippet = content[:300] if content else ""
-
-        citations.append(
-            Citation(
-                chunk_id=r.get("chunk_id", ""),
-                file_id=r.get("file_id", ""),
-                file_name=r.get("file_name", ""),
-                source_url=r.get("source_url"),
-                location=location,
-                snippet=snippet,
-            )
-        )
-        formatted_parts.append(
-            f"[Result {i}] File: {r.get('file_name', 'unknown')}"
-            + (f" | {location}" if location else "")
-            + f"\n{content}\n"
-        )
-
-    return "\n".join(formatted_parts), citations
-
-
-async def _handle_search_within_file(
-    tool_args: dict,
-    project_id: str,
-    access_token: str,
-    search_service: "AzureSearchService",
-    drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
-    tool_cache: dict | None = None,
-) -> tuple[str, list[Citation]]:
-    query = tool_args["query"]
-    file_id = tool_args["file_id"]
-    top_k = tool_args.get("top_k", 5)
-
-    query_vector = await embeddings_service.get_embedding(query)
-    results = await search_service.search_within_file(
-        query=query,
-        query_vector=query_vector,
-        file_id=file_id,
-        project_id=project_id,
-        top_k=top_k,
-    )
-
-    if not results:
-        return "No results found in this file.", []
-
-    citations: list[Citation] = []
-    formatted_parts: list[str] = []
-    for i, r in enumerate(results, 1):
-        location = None
-        if r.get("page_number"):
-            location = f"Page {r['page_number']}"
-        if r.get("section_heading"):
-            loc_parts = [r["section_heading"]]
-            if location:
-                loc_parts.append(location)
-            location = ", ".join(loc_parts)
-
-        content = r.get("content", "")
-        snippet = content[:300] if content else ""
-
-        citations.append(
-            Citation(
-                chunk_id=r.get("chunk_id", ""),
-                file_id=r.get("file_id", ""),
-                file_name=r.get("file_name", ""),
-                source_url=r.get("source_url"),
-                location=location,
-                snippet=snippet,
-            )
-        )
-        formatted_parts.append(
-            f"[Result {i}] {r.get('file_name', 'unknown')}"
-            + (f" | {location}" if location else "")
-            + f"\n{content}\n"
-        )
-
-    return "\n".join(formatted_parts), citations
-
-
 async def _handle_get_folder_structure(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     # The project_id is used as the Google Drive folder_id
@@ -255,7 +147,7 @@ async def _handle_get_folder_structure(
         size_str = f" ({_format_size(int(size))})" if size else ""
         is_folder = mime == "application/vnd.google-apps.folder"
         icon = "[folder]" if is_folder else "[file]"
-        return f"{prefix}{icon} {f.get('name', 'unknown')}{size_str} (id: {f.get('id', '')})"
+        return f"{prefix}{icon} {_sanitize_for_agent(f.get('name', 'unknown'))}{size_str} (id: {f.get('id', '')})"
 
     def _render(file_list: list[dict], indent: int = 0) -> None:
         for f in file_list:
@@ -282,12 +174,12 @@ async def _handle_get_file_metadata(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
-    file_id = tool_args["file_id"]
+    file_id, err = _require_arg(tool_args, "file_id")
+    if err:
+        return err, []
     metadata = await drive_service.get_file_metadata(
         file_id=file_id, access_token=access_token
     )
@@ -298,21 +190,33 @@ async def _handle_read_document_pages(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
-    file_id = tool_args["file_id"]
-    start_page = tool_args["start_page"]
-    end_page = tool_args["end_page"]
+    file_id, err = _require_arg(tool_args, "file_id")
+    if err:
+        return err, []
+    start_page, err = _require_arg(tool_args, "start_page")
+    if err:
+        return err, []
+    end_page, err = _require_arg(tool_args, "end_page")
+    if err:
+        return err, []
 
     # First get metadata to determine file type
     metadata = await drive_service.get_file_metadata(
         file_id=file_id, access_token=access_token
     )
     mime_type = metadata.get("mimeType", "")
-    file_name = metadata.get("name", "unknown")
+    file_name = _sanitize_for_agent(metadata.get("name", "unknown"))
+
+    # Check file size before downloading
+    file_size = metadata.get("size")
+    if file_size is not None:
+        from app.dependencies import get_settings
+        max_bytes = get_settings().MAX_FILE_DOWNLOAD_BYTES
+        if int(file_size) > max_bytes:
+            return f"File '{file_name}' is too large ({_format_size(int(file_size))}). Max: {_format_size(max_bytes)}.", []
 
     if "google-apps.document" in mime_type:
         # Export Google Doc as plain text
@@ -365,91 +269,6 @@ def _split_into_pages(text: str, chars_per_page: int = 3000) -> list[str]:
     return pages if pages else [""]
 
 
-async def _handle_read_chunk_context(
-    tool_args: dict,
-    project_id: str,
-    access_token: str,
-    search_service: "AzureSearchService",
-    drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
-    tool_cache: dict | None = None,
-) -> tuple[str, list[Citation]]:
-    chunk_id = tool_args["chunk_id"]
-    result = await search_service.get_chunk_with_neighbors(
-        chunk_id=chunk_id, project_id=project_id
-    )
-
-    parts: list[str] = []
-    citations: list[Citation] = []
-
-    if result.get("previous"):
-        prev = result["previous"]
-        parts.append(f"[Previous chunk]\n{prev.get('content', '')}\n")
-
-    if result.get("chunk"):
-        chunk = result["chunk"]
-        parts.append(f"[Current chunk]\n{chunk.get('content', '')}\n")
-        citations.append(
-            Citation(
-                chunk_id=chunk.get("chunk_id", ""),
-                file_id=chunk.get("file_id", ""),
-                file_name=chunk.get("file_name", ""),
-                source_url=chunk.get("source_url"),
-                location=chunk.get("section_heading"),
-                snippet=chunk.get("content", "")[:300],
-            )
-        )
-    else:
-        parts.append("Chunk not found.")
-
-    if result.get("next"):
-        nxt = result["next"]
-        parts.append(f"[Next chunk]\n{nxt.get('content', '')}\n")
-
-    return "\n".join(parts), citations
-
-
-async def _handle_get_document_outline(
-    tool_args: dict,
-    project_id: str,
-    access_token: str,
-    search_service: "AzureSearchService",
-    drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
-    tool_cache: dict | None = None,
-) -> tuple[str, list[Citation]]:
-    file_id = tool_args["file_id"]
-
-    # Search for all chunks of this file and extract section headings
-    results = await search_service.search_within_file(
-        query="*",
-        query_vector=await embeddings_service.get_embedding("document outline structure"),
-        file_id=file_id,
-        project_id=project_id,
-        top_k=100,
-    )
-
-    if not results:
-        return "No outline information available for this document.", []
-
-    seen_headings: set[str] = set()
-    outline_lines: list[str] = []
-
-    for r in results:
-        heading = r.get("section_heading")
-        page = r.get("page_number")
-        if heading and heading not in seen_headings:
-            seen_headings.add(heading)
-            page_str = f" (page {page})" if page else ""
-            outline_lines.append(f"- {heading}{page_str}")
-
-    if not outline_lines:
-        return "No section headings found in this document.", []
-
-    file_name = results[0].get("file_name", "unknown")
-    return f"Outline of {file_name}:\n" + "\n".join(outline_lines), []
-
-
 async def _download_spreadsheet_bytes(
     file_id: str,
     access_token: str,
@@ -470,6 +289,17 @@ async def _download_spreadsheet_bytes(
     mime_type = metadata.get("mimeType", "")
     file_name = metadata.get("name", "unknown")
     web_view_link = metadata.get("webViewLink")
+
+    # Check file size (Google Sheets exports have no 'size' — skip gracefully)
+    file_size = metadata.get("size")
+    if file_size is not None:
+        from app.dependencies import get_settings
+        max_bytes = get_settings().MAX_SPREADSHEET_BYTES
+        if int(file_size) > max_bytes:
+            raise ValueError(
+                f"Spreadsheet '{file_name}' is too large "
+                f"({_format_size(int(file_size))}). Max: {_format_size(max_bytes)}."
+            )
 
     if "google-apps.spreadsheet" in mime_type:
         content = await drive_service.export_google_doc(
@@ -493,16 +323,17 @@ async def _handle_get_spreadsheet_overview(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
-    file_id = tool_args["file_id"]
+    file_id, err = _require_arg(tool_args, "file_id")
+    if err:
+        return err, []
 
-    content, file_name, mime_type, _web_link = await _download_spreadsheet_bytes(
+    content, file_name_raw, mime_type, _web_link = await _download_spreadsheet_bytes(
         file_id, access_token, drive_service, tool_cache=tool_cache
     )
+    file_name = _sanitize_for_agent(file_name_raw)
 
     import openpyxl
 
@@ -544,19 +375,26 @@ async def _handle_read_spreadsheet_rows(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
-    file_id = tool_args["file_id"]
-    sheet_name = tool_args["sheet_name"]
-    start_row = tool_args["start_row"]
-    end_row = tool_args["end_row"]
+    file_id, err = _require_arg(tool_args, "file_id")
+    if err:
+        return err, []
+    sheet_name, err = _require_arg(tool_args, "sheet_name")
+    if err:
+        return err, []
+    start_row, err = _require_arg(tool_args, "start_row")
+    if err:
+        return err, []
+    end_row, err = _require_arg(tool_args, "end_row")
+    if err:
+        return err, []
 
-    content, file_name, _mime_type, web_view_link = await _download_spreadsheet_bytes(
+    content, file_name_raw, _mime_type, web_view_link = await _download_spreadsheet_bytes(
         file_id, access_token, drive_service, tool_cache=tool_cache
     )
+    file_name = _sanitize_for_agent(file_name_raw)
 
     import openpyxl
 
@@ -606,18 +444,22 @@ async def _handle_search_spreadsheet(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
-    file_id = tool_args["file_id"]
-    query = tool_args["query"].lower()
+    file_id, err = _require_arg(tool_args, "file_id")
+    if err:
+        return err, []
+    query, err = _require_arg(tool_args, "query")
+    if err:
+        return err, []
+    query = query.lower()
     target_sheet = tool_args.get("sheet_name")
 
-    content, file_name, _mime_type, web_view_link = await _download_spreadsheet_bytes(
+    content, file_name_raw, _mime_type, web_view_link = await _download_spreadsheet_bytes(
         file_id, access_token, drive_service, tool_cache=tool_cache
     )
+    file_name = _sanitize_for_agent(file_name_raw)
 
     import openpyxl
 
@@ -637,7 +479,15 @@ async def _handle_search_spreadsheet(
             for cell in ws[1]:
                 headers.append(str(cell.value) if cell.value is not None else "")
 
+        from app.dependencies import get_settings
+        max_rows = get_settings().MAX_SPREADSHEET_SEARCH_ROWS
+
+        rows_scanned = 0
         for row_idx in range(1, (ws.max_row or 0) + 1):
+            rows_scanned += 1
+            if rows_scanned > max_rows:
+                matches.append(f"⚠ Stopped after scanning {max_rows} rows.")
+                break
             row_vals: list[str] = []
             found = False
             for cell in ws[row_idx]:
@@ -646,7 +496,8 @@ async def _handle_search_spreadsheet(
                 if query in val.lower():
                     found = True
             if found:
-                matches.append(f"Sheet '{sn}', Row {row_idx}: {' | '.join(row_vals)}")
+                safe_vals = [_sanitize_for_agent(v) for v in row_vals]
+                matches.append(f"Sheet '{sn}', Row {row_idx}: {' | '.join(safe_vals)}")
 
         if len(matches) >= 50:
             break
@@ -674,18 +525,23 @@ async def _handle_get_column_stats(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
-    file_id = tool_args["file_id"]
-    sheet_name = tool_args["sheet_name"]
-    column_name = tool_args["column_name"]
+    file_id, err = _require_arg(tool_args, "file_id")
+    if err:
+        return err, []
+    sheet_name, err = _require_arg(tool_args, "sheet_name")
+    if err:
+        return err, []
+    column_name, err = _require_arg(tool_args, "column_name")
+    if err:
+        return err, []
 
-    content, file_name, _mime_type, web_view_link = await _download_spreadsheet_bytes(
+    content, file_name_raw, _mime_type, web_view_link = await _download_spreadsheet_bytes(
         file_id, access_token, drive_service, tool_cache=tool_cache
     )
+    file_name = _sanitize_for_agent(file_name_raw)
 
     import openpyxl
     import statistics
@@ -763,12 +619,12 @@ async def _handle_report_inability(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
-    reason = tool_args["reason"]
+    reason, err = _require_arg(tool_args, "reason")
+    if err:
+        return err, []
     return reason, []
 
 
@@ -776,12 +632,12 @@ async def _handle_request_clarification(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
-    question = tool_args["question"]
+    question, err = _require_arg(tool_args, "question")
+    if err:
+        return err, []
     return question, []
 
 
@@ -794,12 +650,12 @@ async def _handle_search_drive(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
-    query = tool_args["query"]
+    query, err = _require_arg(tool_args, "query")
+    if err:
+        return err, []
     file_types = tool_args.get("file_types")
 
     results = await drive_service.search_files(
@@ -815,7 +671,7 @@ async def _handle_search_drive(
     formatted_parts: list[str] = []
     for i, f in enumerate(results, 1):
         file_id = f.get("id", "")
-        file_name = f.get("name", "unknown")
+        file_name = _sanitize_for_agent(f.get("name", "unknown"))
         mime_type = f.get("mimeType", "")
         size = f.get("size", "")
         size_str = f" ({_format_size(int(size))})" if size else ""
@@ -835,20 +691,28 @@ async def _handle_get_file_content(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
-    file_id = tool_args["file_id"]
+    file_id, err = _require_arg(tool_args, "file_id")
+    if err:
+        return err, []
     max_chars = tool_args.get("max_chars", 50000)
 
     metadata = await drive_service.get_file_metadata(
         file_id=file_id, access_token=access_token
     )
     mime_type = metadata.get("mimeType", "")
-    file_name = metadata.get("name", "unknown")
+    file_name = _sanitize_for_agent(metadata.get("name", "unknown"))
     web_link = metadata.get("webViewLink")
+
+    # Check file size before downloading
+    file_size = metadata.get("size")
+    if file_size is not None:
+        from app.dependencies import get_settings
+        max_bytes = get_settings().MAX_FILE_DOWNLOAD_BYTES
+        if int(file_size) > max_bytes:
+            return f"File '{file_name}' is too large ({_format_size(int(file_size))}). Max: {_format_size(max_bytes)}.", []
 
     # Google Docs/Sheets/Slides — export as plain text
     if "google-apps.document" in mime_type:
@@ -910,21 +774,31 @@ async def _handle_search_within_file_text(
     tool_args: dict,
     project_id: str,
     access_token: str,
-    search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
-    embeddings_service: "EmbeddingsService",
     tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
-    file_id = tool_args["file_id"]
-    query = tool_args["query"]
+    file_id, err = _require_arg(tool_args, "file_id")
+    if err:
+        return err, []
+    query, err = _require_arg(tool_args, "query")
+    if err:
+        return err, []
     context_chars = tool_args.get("context_chars", 200)
 
     metadata = await drive_service.get_file_metadata(
         file_id=file_id, access_token=access_token
     )
     mime_type = metadata.get("mimeType", "")
-    file_name = metadata.get("name", "unknown")
+    file_name = _sanitize_for_agent(metadata.get("name", "unknown"))
     web_link = metadata.get("webViewLink")
+
+    # Check file size before downloading
+    file_size = metadata.get("size")
+    if file_size is not None:
+        from app.dependencies import get_settings
+        max_bytes = get_settings().MAX_FILE_DOWNLOAD_BYTES
+        if int(file_size) > max_bytes:
+            return f"File '{file_name}' is too large ({_format_size(int(file_size))}). Max: {_format_size(max_bytes)}.", []
 
     # Get the full text
     if "google-apps.document" in mime_type:

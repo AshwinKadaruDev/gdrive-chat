@@ -27,6 +27,8 @@ async def lifespan(app: FastAPI):
     # Startup
     yield
     # Shutdown
+    from app.dependencies import dispose_engine
+    await dispose_engine()
 
 
 app = FastAPI(
@@ -92,8 +94,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=_settings.CORS_ALLOWED_METHODS.split(","),
+    allow_headers=_settings.CORS_ALLOWED_HEADERS.split(","),
 )
 
 # Import and include routers
@@ -103,6 +105,14 @@ app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(sync.router, prefix="/api/sync", tags=["sync"])
+
+# Rate limiting handler
+from app.routers.chat import limiter as _chat_limiter
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
+app.state.limiter = _chat_limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ---------------------------------------------------------------------------
 # Static files / SPA serving (production only)
