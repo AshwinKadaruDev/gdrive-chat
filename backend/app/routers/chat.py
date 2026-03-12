@@ -6,7 +6,7 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,16 @@ from app.schemas.chat import (
     ChatSessionResponse,
     MessageResponse,
 )
+from app.services import (
+    DRIVE_AGENT_TOOLS,
+    DRIVE_SYSTEM_PROMPT,
+    AzureSearchService,
+    EmbeddingsService,
+    FolderAgent,
+    GoogleDriveService,
+    LLMClient,
+)
+from app.utils.security import get_valid_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -179,17 +189,6 @@ async def chat(
     citations: list[dict] | None = None
 
     try:
-        from app.services import (
-            DRIVE_AGENT_TOOLS,
-            DRIVE_SYSTEM_PROMPT,
-            AzureSearchService,
-            EmbeddingsService,
-            FolderAgent,
-            GoogleDriveService,
-            LLMClient,
-        )
-        from app.utils.security import get_valid_access_token
-
         llm_client = LLMClient(
             # anthropic_api_key=settings.ANTHROPIC_API_KEY,  # TODO: Re-enable Anthropic
             openai_api_key=settings.OPENAI_API_KEY,
@@ -265,27 +264,27 @@ async def chat(
             if agent_result.citations
             else None
         )
+
+        # Persist the assistant message inside the try block
+        assistant_message = Message(
+            chat_session_id=session.id,
+            role=MessageRole.ASSISTANT,
+            content=answer_text,
+            citations=citations,
+        )
+        db.add(assistant_message)
+        await db.flush()
+
     except Exception as exc:
         logger.error(
             "[CHAT] Agent failed for session %s: %s: %s",
             session.id, type(exc).__name__, exc,
             exc_info=True,
         )
-        answer_text = (
-            "I'm sorry, something went wrong while processing your request. "
-            "Please try again."
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while processing your request.",
         )
-        citations = None
-
-    # Persist the assistant message -----------------------------------------
-    assistant_message = Message(
-        chat_session_id=session.id,
-        role=MessageRole.ASSISTANT,
-        content=answer_text,
-        citations=citations,
-    )
-    db.add(assistant_message)
-    await db.flush()
 
     return ChatResponse(
         message=MessageResponse(
@@ -387,13 +386,35 @@ async def chat_stream(
     ]
 
     # Get a valid access token before committing (refresh needs DB write access)
-    from app.utils.security import get_valid_access_token as _get_token
     logger.info("[CHAT-STREAM] Getting valid access token for user %s", user.id)
-    _user_access_token = await _get_token(user, settings, db)
+    _user_access_token = await get_valid_access_token(user, settings, db)
     logger.info("[CHAT-STREAM] Access token obtained, length=%d", len(_user_access_token) if _user_access_token else 0)
 
     # Commit user message + session before streaming
     await db.commit()
+
+    async def _save_streaming_message(
+        sid: uuid.UUID, content: str, citations_data: list | None
+    ) -> None:
+        """Persist the assistant message using a fresh DB session."""
+        try:
+            from app.dependencies import _init_db
+
+            factory = _init_db()
+            async with factory() as save_db:
+                assistant_msg = Message(
+                    chat_session_id=sid,
+                    role=MessageRole.ASSISTANT,
+                    content=content,
+                    citations=citations_data,
+                )
+                save_db.add(assistant_msg)
+                await save_db.commit()
+        except Exception as save_exc:
+            logger.error(
+                "[CHAT-STREAM] Failed to persist assistant message for session %s: %s",
+                sid, save_exc, exc_info=True,
+            )
 
     async def event_generator():
         """Generate SSE events from the agent's streaming loop."""
@@ -404,15 +425,6 @@ async def chat_stream(
         final_citations = None
 
         try:
-            from app.services import (
-                DRIVE_AGENT_TOOLS,
-                DRIVE_SYSTEM_PROMPT,
-                AzureSearchService,
-                EmbeddingsService,
-                FolderAgent,
-                GoogleDriveService,
-                LLMClient,
-            )
             llm_client = LLMClient(
                 # anthropic_api_key=settings.ANTHROPIC_API_KEY,  # TODO: Re-enable Anthropic
                 openai_api_key=settings.OPENAI_API_KEY,
@@ -469,6 +481,11 @@ async def chat_stream(
                         session_id, len("".join(full_answer)),
                         len(final_citations) if final_citations else 0,
                     )
+                    # Persist before yielding done so the DB write happens
+                    # while we still control the async context.
+                    await _save_streaming_message(
+                        session_id, "".join(full_answer), final_citations
+                    )
                     yield f"event: done\ndata: {json.dumps({})}\n\n"
 
         except Exception as exc:
@@ -484,21 +501,11 @@ async def chat_stream(
             full_answer.append(error_text)
             yield f"event: delta\ndata: {json.dumps({'text': error_text})}\n\n"
             yield f"event: citations\ndata: []\n\n"
-            yield f"event: done\ndata: {json.dumps({})}\n\n"
-
-        # Persist the assistant message after streaming completes
-        from app.dependencies import _init_db
-
-        factory = _init_db()
-        async with factory() as save_db:
-            assistant_msg = Message(
-                chat_session_id=session_id,
-                role=MessageRole.ASSISTANT,
-                content="".join(full_answer),
-                citations=final_citations,
+            # Persist the error message too
+            await _save_streaming_message(
+                session_id, "".join(full_answer), None
             )
-            save_db.add(assistant_msg)
-            await save_db.commit()
+            yield f"event: done\ndata: {json.dumps({})}\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -521,6 +528,8 @@ async def chat_stream(
 async def list_drive_sessions(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ):
     """Return all Drive Chat sessions for the current user, newest first."""
     result = await db.execute(
@@ -530,6 +539,8 @@ async def list_drive_sessions(
             ChatSession.user_id == user.id,
         )
         .order_by(ChatSession.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
     return result.scalars().all()
 
@@ -545,6 +556,8 @@ async def list_sessions(
     project_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ):
     """Return all chat sessions for a given project, newest first."""
     await _verify_project_access(project_id, user, db)
@@ -553,6 +566,8 @@ async def list_sessions(
         select(ChatSession)
         .where(ChatSession.project_id == project_id)
         .order_by(ChatSession.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
     return result.scalars().all()
 
@@ -568,6 +583,8 @@ async def list_messages(
     session_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ):
     """Return all messages in a chat session, ordered chronologically."""
     await _verify_session_access(session_id, user, db)
@@ -576,6 +593,8 @@ async def list_messages(
         select(Message)
         .where(Message.chat_session_id == session_id)
         .order_by(Message.created_at.asc())
+        .limit(limit)
+        .offset(offset)
     )
     return result.scalars().all()
 

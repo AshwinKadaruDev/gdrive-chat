@@ -26,9 +26,9 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/auth/google/callback"
 
-    # Azure AI Search
-    AZURE_SEARCH_ENDPOINT: str
-    AZURE_SEARCH_API_KEY: str
+    # Azure AI Search (optional — app starts without search, but RAG won't work)
+    AZURE_SEARCH_ENDPOINT: Optional[str] = None
+    AZURE_SEARCH_API_KEY: Optional[str] = None
     AZURE_SEARCH_INDEX_NAME: str = "talk-to-folder-chunks"
 
     # OpenAI

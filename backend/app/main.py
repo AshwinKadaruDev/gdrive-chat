@@ -14,7 +14,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -63,6 +63,15 @@ class AuthGuardMiddleware(BaseHTTPMiddleware):
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     content={"detail": "Invalid or expired session"},
                 )
+
+            # CSRF protection: state-changing methods must include the
+            # X-Requested-With header (set automatically by Axios/fetch).
+            if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+                if not request.headers.get("x-requested-with"):
+                    return JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={"detail": "Missing CSRF header"},
+                    )
         return await call_next(request)
 
 
@@ -95,15 +104,46 @@ app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(sync.router, prefix="/api/sync", tags=["sync"])
 
-# Mount static files for production SPA serving (if the directory exists)
+# ---------------------------------------------------------------------------
+# Static files / SPA serving (production only)
+# ---------------------------------------------------------------------------
+# In production the built frontend lives in ../static/ (copied by Dockerfile).
+# We mount /assets for JS/CSS bundles, then use middleware to serve index.html
+# as a fallback for client-side routes.  Middleware runs AFTER all API routes
+# have been tried, so /api/* and /auth/* are never shadowed.
 _static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
-if os.path.isdir(_static_dir):
-    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="static")
+_has_static = os.path.isdir(_static_dir)
+
+if _has_static:
+    _assets_dir = os.path.join(_static_dir, "assets")
+    if os.path.isdir(_assets_dir):
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="static-assets")
 
 
-@app.get("/")
-async def root():
-    """Root endpoint: redirect to static SPA or return status."""
-    if os.path.isdir(_static_dir):
-        return RedirectResponse(url="/index.html")
-    return JSONResponse({"status": "ok"})
+@app.middleware("http")
+async def spa_middleware(request: Request, call_next):
+    """Serve SPA index.html for non-API GET requests that would otherwise 404."""
+    response = await call_next(request)
+
+    if not _has_static:
+        return response
+
+    # Only intercept GET 404s for non-API, non-auth paths
+    if (
+        response.status_code == 404
+        and request.method == "GET"
+        and not request.url.path.startswith(("/api/", "/auth/"))
+    ):
+        # Try to serve the exact static file first (favicon.ico, etc.)
+        rel_path = request.url.path.lstrip("/")
+        if rel_path:
+            file_path = os.path.join(_static_dir, rel_path)
+            if os.path.isfile(file_path):
+                return FileResponse(file_path)
+
+        # SPA fallback: serve index.html for client-side routes
+        index = os.path.join(_static_dir, "index.html")
+        if os.path.isfile(index):
+            return FileResponse(index)
+
+    return response

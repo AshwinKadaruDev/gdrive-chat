@@ -39,7 +39,10 @@ export default function TopBar() {
 
   return (
     <header className="flex items-center border-b border-[var(--border-subtle)] bg-surface-900 px-6">
-      <TenexLogo iconSize={24} className="mr-8" />
+      <TenexLogo iconSize={24} className="mr-1" />
+      <span className="mr-7 text-[10px] text-surface-500 select-none" title={`Version ${__APP_VERSION__}`}>
+        v{__APP_VERSION__}
+      </span>
 
       <nav className="flex gap-1">
         {tabs.map(({ to, label, icon: Icon }) => (

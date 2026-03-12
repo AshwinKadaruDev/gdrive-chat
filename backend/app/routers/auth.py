@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import urllib.parse
 from datetime import datetime, timezone
 
@@ -41,6 +42,8 @@ OAUTH_SCOPES = "openid email profile https://www.googleapis.com/auth/drive.reado
 async def google_login(settings: Settings = Depends(get_settings)):
     """Redirect the user to the Google OAuth consent screen."""
 
+    state = secrets.token_urlsafe(32)
+
     params = {
         "client_id": settings.GOOGLE_CLIENT_ID,
         "redirect_uri": settings.GOOGLE_REDIRECT_URI,
@@ -48,13 +51,23 @@ async def google_login(settings: Settings = Depends(get_settings)):
         "scope": OAUTH_SCOPES,
         "access_type": "offline",
         "prompt": "consent",
+        "state": state,
     }
     url = f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"
 
-    return Response(
+    response = Response(
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
         headers={"Location": url},
     )
+    response.set_cookie(
+        key="oauth_state",
+        value=state,
+        httponly=True,
+        samesite="lax",
+        max_age=600,
+        path="/",
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +76,8 @@ async def google_login(settings: Settings = Depends(get_settings)):
 @router.get("/google/callback")
 async def google_callback(
     code: str,
+    state: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
@@ -75,6 +90,14 @@ async def google_callback(
     4. Create an application session and set the session cookie.
     5. Redirect to the frontend.
     """
+
+    # Validate OAuth state parameter (CSRF protection for OAuth flow)
+    expected_state = request.cookies.get("oauth_state")
+    if not expected_state or expected_state != state:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid OAuth state parameter",
+        )
 
     # 1. Exchange code for tokens -------------------------------------------
     async with httpx.AsyncClient() as client:
@@ -126,12 +149,9 @@ async def google_callback(
     encrypted_refresh = (
         encrypt_token(refresh_token, settings) if refresh_token else None
     )
-    token_expires_at = (
-        datetime.now(timezone.utc).replace(microsecond=0)
-        if expires_in is None
-        else datetime.fromtimestamp(
-            datetime.now(timezone.utc).timestamp() + expires_in, tz=timezone.utc
-        )
+    _expires_in = expires_in if expires_in is not None else 3600
+    token_expires_at = datetime.fromtimestamp(
+        datetime.now(timezone.utc).timestamp() + _expires_in, tz=timezone.utc
     )
 
     if user is None:
@@ -170,6 +190,7 @@ async def google_callback(
         max_age=SESSION_MAX_AGE,
         path="/",
     )
+    response.delete_cookie(key="oauth_state", path="/")
     return response
 
 

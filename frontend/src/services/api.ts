@@ -4,7 +4,6 @@ import type {
   Project,
   ChatSession,
   Message,
-  SendMessageResponse,
 } from "@/types";
 
 const api = axios.create({
@@ -12,6 +11,7 @@ const api = axios.create({
   withCredentials: true,
   headers: {
     "Content-Type": "application/json",
+    "X-Requested-With": "XMLHttpRequest",
   },
 });
 
@@ -19,9 +19,11 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      const currentPath = window.location.pathname;
-      if (currentPath !== "/") {
-        window.location.href = "/";
+      // Don't fire for /auth/ routes — a 401 from /auth/me is expected
+      // when the user isn't logged in and is handled by fetchUser().
+      const url: string = error.config?.url ?? "";
+      if (!url.startsWith("/auth/")) {
+        window.dispatchEvent(new CustomEvent("auth:session-expired"));
       }
     }
     return Promise.reject(error);
@@ -112,44 +114,11 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
   await api.delete(`/api/chat/sessions/${sessionId}`);
 }
 
-export async function sendMessage(
-  projectId: string,
-  message: string,
-  sessionId?: string
-): Promise<SendMessageResponse> {
-  const { data } = await api.post<SendMessageResponse>(
-    `/api/chat`,
-    {
-      message,
-      session_id: sessionId,
-      project_id: sessionId ? undefined : projectId,
-    }
-  );
-  return data;
-}
-
 // ---------- Drive Chat ----------
 
 export async function getDriveChatSessions(): Promise<ChatSession[]> {
   const { data } = await api.get<ChatSession[]>(
     `/api/chat/sessions/drive`
-  );
-  return data;
-}
-
-export async function sendDriveMessage(
-  folderId: string,
-  message: string,
-  sessionId?: string
-): Promise<SendMessageResponse> {
-  const { data } = await api.post<SendMessageResponse>(
-    `/api/chat`,
-    {
-      message,
-      session_id: sessionId,
-      gdrive_folder_id: sessionId ? undefined : folderId,
-      agent_type: "drive",
-    }
   );
   return data;
 }
@@ -177,14 +146,17 @@ export async function streamChat(
 ): Promise<void> {
   const response = await fetch("/api/chat/stream", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Requested-With": "XMLHttpRequest",
+    },
     credentials: "include",
     body: JSON.stringify(params),
   });
 
   if (!response.ok) {
     if (response.status === 401) {
-      window.location.href = "/";
+      window.dispatchEvent(new CustomEvent("auth:session-expired"));
     }
     callbacks.onError("Failed to connect to chat service.");
     return;
@@ -198,52 +170,60 @@ export async function streamChat(
 
   const decoder = new TextDecoder();
   let buffer = "";
+  let doneFired = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
+      buffer += decoder.decode(value, { stream: true });
 
-    // Parse SSE events from buffer
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? ""; // Keep incomplete line in buffer
+      // Parse SSE events from buffer
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? ""; // Keep incomplete line in buffer
 
-    let eventType = "";
-    let eventData = "";
+      let eventType = "";
+      let eventData = "";
 
-    for (const line of lines) {
-      if (line.startsWith("event: ")) {
-        eventType = line.slice(7).trim();
-      } else if (line.startsWith("data: ")) {
-        eventData = line.slice(6);
-      } else if (line === "" && eventType && eventData) {
-        // End of event — dispatch
-        try {
-          const parsed = JSON.parse(eventData);
-          switch (eventType) {
-            case "session":
-              callbacks.onSession(parsed.session_id);
-              break;
-            case "status":
-              callbacks.onStatus(parsed.text);
-              break;
-            case "delta":
-              callbacks.onDelta(parsed.text);
-              break;
-            case "citations":
-              callbacks.onCitations(parsed);
-              break;
-            case "done":
-              callbacks.onDone();
-              break;
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith("data: ")) {
+          eventData += (eventData ? "\n" : "") + line.slice(6);
+        } else if (line === "" && eventType && eventData) {
+          // End of event — dispatch
+          try {
+            const parsed = JSON.parse(eventData);
+            switch (eventType) {
+              case "session":
+                callbacks.onSession(parsed.session_id);
+                break;
+              case "status":
+                callbacks.onStatus(parsed.text);
+                break;
+              case "delta":
+                callbacks.onDelta(parsed.text);
+                break;
+              case "citations":
+                callbacks.onCitations(parsed);
+                break;
+              case "done":
+                doneFired = true;
+                callbacks.onDone();
+                break;
+            }
+          } catch {
+            // Ignore parse errors
           }
-        } catch {
-          // Ignore parse errors
+          eventType = "";
+          eventData = "";
         }
-        eventType = "";
-        eventData = "";
       }
+    }
+  } finally {
+    if (!doneFired) {
+      callbacks.onDone();
     }
   }
 }

@@ -12,7 +12,7 @@ Write-Host ""
 # ---------------------------------------------------------------
 # 1. Check prerequisites
 # ---------------------------------------------------------------
-Write-Host "[1/8] Checking prerequisites..." -ForegroundColor Yellow
+Write-Host "[1/9] Checking prerequisites..." -ForegroundColor Yellow
 
 # Check Python
 try {
@@ -93,7 +93,7 @@ $PipExe = "$VenvPath\Scripts\pip.exe"
 $PythonExe = "$VenvPath\Scripts\python.exe"
 
 if (-not (Test-Path $VenvPath)) {
-    Write-Host "[2/8] Creating Python virtual environment..." -ForegroundColor Yellow
+    Write-Host "[2/9] Creating Python virtual environment..." -ForegroundColor Yellow
     python -m venv $VenvPath
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: Failed to create virtual environment." -ForegroundColor Red
@@ -101,13 +101,13 @@ if (-not (Test-Path $VenvPath)) {
     }
     Write-Host "  Virtual environment created at backend\venv" -ForegroundColor Green
 } else {
-    Write-Host "[2/8] Virtual environment already exists." -ForegroundColor Green
+    Write-Host "[2/9] Virtual environment already exists." -ForegroundColor Green
 }
 
 # ---------------------------------------------------------------
 # 3. Install backend Python dependencies
 # ---------------------------------------------------------------
-Write-Host "[3/8] Installing backend dependencies..." -ForegroundColor Yellow
+Write-Host "[3/9] Installing backend dependencies..." -ForegroundColor Yellow
 if ($useUv) {
     uv pip install --python $PythonExe -r "$ProjectRoot\backend\requirements.txt" --quiet
 } else {
@@ -135,7 +135,7 @@ Write-Host "  Worker dependencies installed." -ForegroundColor Green
 # ---------------------------------------------------------------
 # 4. Install frontend dependencies
 # ---------------------------------------------------------------
-Write-Host "[4/8] Installing frontend dependencies..." -ForegroundColor Yellow
+Write-Host "[4/9] Installing frontend dependencies..." -ForegroundColor Yellow
 Push-Location "$ProjectRoot\frontend"
 
 if (Test-Path "node_modules") {
@@ -154,7 +154,7 @@ Write-Host "  Frontend dependencies installed." -ForegroundColor Green
 # ---------------------------------------------------------------
 # 5. Create .env from .env.example if it doesn't exist
 # ---------------------------------------------------------------
-Write-Host "[5/8] Checking .env file..." -ForegroundColor Yellow
+Write-Host "[5/9] Checking .env file..." -ForegroundColor Yellow
 $EnvFile = "$ProjectRoot\.env"
 $EnvExample = "$ProjectRoot\.env.example"
 $envCreated = $false
@@ -172,9 +172,29 @@ if (-not (Test-Path $EnvFile)) {
 }
 
 # ---------------------------------------------------------------
-# 6. Generate secrets if not already in .env
+# 6. Create .env.production from template if it doesn't exist
 # ---------------------------------------------------------------
-Write-Host "[6/8] Checking security keys..." -ForegroundColor Yellow
+Write-Host "[6/9] Checking .env.production file..." -ForegroundColor Yellow
+$EnvProdFile = "$ProjectRoot\.env.production"
+$EnvProdExample = "$ProjectRoot\.env.production.example"
+$envProdCreated = $false
+
+if (-not (Test-Path $EnvProdFile)) {
+    if (Test-Path $EnvProdExample) {
+        Copy-Item $EnvProdExample $EnvProdFile
+        Write-Host "  .env.production created from .env.production.example" -ForegroundColor Green
+        $envProdCreated = $true
+    } else {
+        Write-Host "  WARNING: .env.production.example not found." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  .env.production already exists." -ForegroundColor Green
+}
+
+# ---------------------------------------------------------------
+# 7. Generate secrets if not already in .env
+# ---------------------------------------------------------------
+Write-Host "[7/9] Checking security keys..." -ForegroundColor Yellow
 
 $envContent = Get-Content $EnvFile -Raw -ErrorAction SilentlyContinue
 
@@ -196,9 +216,9 @@ if ($envContent) {
 }
 
 # ---------------------------------------------------------------
-# 7. Create database and run migrations
+# 8. Create database and run migrations
 # ---------------------------------------------------------------
-Write-Host "[7/8] Setting up database..." -ForegroundColor Yellow
+Write-Host "[8/9] Setting up database..." -ForegroundColor Yellow
 
 # Try to create the PostgreSQL database (requires psql on PATH)
 try {
@@ -246,9 +266,9 @@ try {
 Pop-Location
 
 # ---------------------------------------------------------------
-# 8. Ensure test scaffolding exists
+# 9. Ensure test scaffolding exists
 # ---------------------------------------------------------------
-Write-Host "[8/8] Ensuring test infrastructure..." -ForegroundColor Yellow
+Write-Host "[9/9] Ensuring test infrastructure..." -ForegroundColor Yellow
 
 # Backend tests directory
 $BackendTestsDir = "$ProjectRoot\backend\tests"
@@ -288,22 +308,25 @@ Write-Host "  Setup Complete!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
+$nextStep = 1
 if ($envCreated) {
-    Write-Host "  1. Edit .env with your real API keys:" -ForegroundColor White
+    Write-Host "  $nextStep. Edit .env with your real API keys:" -ForegroundColor White
     Write-Host "     - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (required for login)" -ForegroundColor Gray
     Write-Host "     - AZURE_SEARCH_ENDPOINT / AZURE_SEARCH_API_KEY" -ForegroundColor Gray
     Write-Host "     - OPENAI_API_KEY" -ForegroundColor Gray
     Write-Host "     - ANTHROPIC_API_KEY (optional)" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "  2. Create 'talk_to_folder' database in PG Admin if not done" -ForegroundColor White
+    $nextStep++
+    Write-Host "  $nextStep. Create 'talk_to_folder' database in PG Admin if not done" -ForegroundColor White
     Write-Host ""
-    Write-Host "  3. Install Temporal CLI (recommended):" -ForegroundColor White
-    Write-Host "     https://docs.temporal.io/cli" -ForegroundColor Gray
-    Write-Host "     Or Docker will be used as fallback." -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "  4. Run the app:" -ForegroundColor White
-    Write-Host "     .\run.ps1" -ForegroundColor Gray
-} else {
-    Write-Host "  1. Run: .\run.ps1" -ForegroundColor White
+    $nextStep++
 }
+if ($envProdCreated) {
+    Write-Host "  $nextStep. Edit .env.production with your Supabase connection string:" -ForegroundColor White
+    Write-Host "     - DATABASE_URL (Session Pooler URL from Supabase dashboard)" -ForegroundColor Gray
+    Write-Host "     - Plus all production API keys (Google, Azure Search, OpenAI, etc.)" -ForegroundColor Gray
+    Write-Host ""
+    $nextStep++
+}
+Write-Host "  $nextStep. Run the app: .\run.ps1" -ForegroundColor White
 Write-Host ""

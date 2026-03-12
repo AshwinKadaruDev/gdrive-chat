@@ -36,6 +36,7 @@ async def execute_tool(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     """
     Execute a tool by name and return (result_string, citations_list).
@@ -77,6 +78,7 @@ async def execute_tool(
             search_service=search_service,
             drive_service=drive_service,
             embeddings_service=embeddings_service,
+            tool_cache=tool_cache,
         )
         logger.info(
             "[TOOL] %s completed: result_length=%d, citations=%d",
@@ -100,6 +102,7 @@ async def _handle_hybrid_search(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     query = tool_args["query"]
     file_types = tool_args.get("file_types")
@@ -158,6 +161,7 @@ async def _handle_search_within_file(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     query = tool_args["query"]
     file_id = tool_args["file_id"]
@@ -216,11 +220,17 @@ async def _handle_get_folder_structure(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     # The project_id is used as the Google Drive folder_id
     files = await drive_service.list_folder(
         folder_id=project_id, access_token=access_token
     )
+
+    # Cache the folder tree so later search_drive calls can skip re-crawling
+    if not hasattr(drive_service, "_folder_tree_cache"):
+        drive_service._folder_tree_cache = {}
+    drive_service._folder_tree_cache[project_id] = files
 
     if not files:
         return "No files found in the folder.", []
@@ -275,6 +285,7 @@ async def _handle_get_file_metadata(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     file_id = tool_args["file_id"]
     metadata = await drive_service.get_file_metadata(
@@ -290,6 +301,7 @@ async def _handle_read_document_pages(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     file_id = tool_args["file_id"]
     start_page = tool_args["start_page"]
@@ -360,6 +372,7 @@ async def _handle_read_chunk_context(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     chunk_id = tool_args["chunk_id"]
     result = await search_service.get_chunk_with_neighbors(
@@ -403,6 +416,7 @@ async def _handle_get_document_outline(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     file_id = tool_args["file_id"]
 
@@ -440,16 +454,22 @@ async def _download_spreadsheet_bytes(
     file_id: str,
     access_token: str,
     drive_service: "GoogleDriveService",
-) -> tuple[bytes, str, str]:
+    tool_cache: dict | None = None,
+) -> tuple[bytes, str, str, str | None]:
     """Download spreadsheet bytes, handling native Google Sheets via export.
 
-    Returns (content_bytes, file_name, mime_type).
+    Returns (content_bytes, file_name, mime_type, web_view_link).
     """
+    cache_key = f"spreadsheet:{file_id}"
+    if tool_cache is not None and cache_key in tool_cache:
+        return tool_cache[cache_key]
+
     metadata = await drive_service.get_file_metadata(
         file_id=file_id, access_token=access_token
     )
     mime_type = metadata.get("mimeType", "")
     file_name = metadata.get("name", "unknown")
+    web_view_link = metadata.get("webViewLink")
 
     if "google-apps.spreadsheet" in mime_type:
         content = await drive_service.export_google_doc(
@@ -463,7 +483,10 @@ async def _download_spreadsheet_bytes(
             file_id=file_id, access_token=access_token
         )
 
-    return content, file_name, mime_type
+    result = (content, file_name, mime_type, web_view_link)
+    if tool_cache is not None:
+        tool_cache[cache_key] = result
+    return result
 
 
 async def _handle_get_spreadsheet_overview(
@@ -473,11 +496,12 @@ async def _handle_get_spreadsheet_overview(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     file_id = tool_args["file_id"]
 
-    content, file_name, mime_type = await _download_spreadsheet_bytes(
-        file_id, access_token, drive_service
+    content, file_name, mime_type, _web_link = await _download_spreadsheet_bytes(
+        file_id, access_token, drive_service, tool_cache=tool_cache
     )
 
     import openpyxl
@@ -523,14 +547,15 @@ async def _handle_read_spreadsheet_rows(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     file_id = tool_args["file_id"]
     sheet_name = tool_args["sheet_name"]
     start_row = tool_args["start_row"]
     end_row = tool_args["end_row"]
 
-    content, _file_name, _mime_type = await _download_spreadsheet_bytes(
-        file_id, access_token, drive_service
+    content, file_name, _mime_type, web_view_link = await _download_spreadsheet_bytes(
+        file_id, access_token, drive_service, tool_cache=tool_cache
     )
 
     import openpyxl
@@ -561,7 +586,20 @@ async def _handle_read_spreadsheet_rows(
         lines.append(f"Row {row_idx}: {' | '.join(row_vals)}")
 
     wb.close()
-    return "\n".join(lines) if lines else "No data found in the specified range.", []
+
+    result_text = "\n".join(lines) if lines else "No data found in the specified range."
+
+    # Build a snippet from the first few data lines (skip header separator)
+    snippet_lines = [l for l in lines[:5] if not l.startswith("---")]
+    citation = Citation(
+        chunk_id=f"spreadsheet-rows-{file_id}-{sheet_name}-{start_row}-{end_row}",
+        file_id=file_id,
+        file_name=file_name,
+        source_url=web_view_link,
+        location=f"Sheet: {sheet_name}, Rows {start_row}-{end_row}",
+        snippet="\n".join(snippet_lines)[:300],
+    )
+    return result_text, [citation]
 
 
 async def _handle_search_spreadsheet(
@@ -571,13 +609,14 @@ async def _handle_search_spreadsheet(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     file_id = tool_args["file_id"]
     query = tool_args["query"].lower()
     target_sheet = tool_args.get("sheet_name")
 
-    content, _file_name, _mime_type = await _download_spreadsheet_bytes(
-        file_id, access_token, drive_service
+    content, file_name, _mime_type, web_view_link = await _download_spreadsheet_bytes(
+        file_id, access_token, drive_service, tool_cache=tool_cache
     )
 
     import openpyxl
@@ -617,7 +656,18 @@ async def _handle_search_spreadsheet(
     if not matches:
         return f"No matches found for '{tool_args['query']}'.", []
 
-    return f"Found {len(matches)} matching rows:\n" + "\n".join(matches), []
+    result_text = f"Found {len(matches)} matching rows:\n" + "\n".join(matches)
+
+    sheet_label = target_sheet or "all sheets"
+    citation = Citation(
+        chunk_id=f"spreadsheet-search-{file_id}-{tool_args['query'][:30]}",
+        file_id=file_id,
+        file_name=file_name,
+        source_url=web_view_link,
+        location=f"Search in {sheet_label}: '{tool_args['query']}'",
+        snippet="\n".join(matches[:3])[:300],
+    )
+    return result_text, [citation]
 
 
 async def _handle_get_column_stats(
@@ -627,13 +677,14 @@ async def _handle_get_column_stats(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     file_id = tool_args["file_id"]
     sheet_name = tool_args["sheet_name"]
     column_name = tool_args["column_name"]
 
-    content, _file_name, _mime_type = await _download_spreadsheet_bytes(
-        file_id, access_token, drive_service
+    content, file_name, _mime_type, web_view_link = await _download_spreadsheet_bytes(
+        file_id, access_token, drive_service, tool_cache=tool_cache
     )
 
     import openpyxl
@@ -695,7 +746,17 @@ async def _handle_get_column_stats(
     if len(values) >= 2:
         stats_lines.append(f"  Std Dev: {statistics.stdev(values):.2f}")
 
-    return "\n".join(stats_lines), []
+    result_text = "\n".join(stats_lines)
+
+    citation = Citation(
+        chunk_id=f"spreadsheet-stats-{file_id}-{sheet_name}-{column_name}",
+        file_id=file_id,
+        file_name=file_name,
+        source_url=web_view_link,
+        location=f"Sheet: {sheet_name}, Column: {column_name}",
+        snippet=result_text[:300],
+    )
+    return result_text, [citation]
 
 
 async def _handle_report_inability(
@@ -705,6 +766,7 @@ async def _handle_report_inability(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     reason = tool_args["reason"]
     return reason, []
@@ -717,6 +779,7 @@ async def _handle_request_clarification(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     question = tool_args["question"]
     return question, []
@@ -734,6 +797,7 @@ async def _handle_search_drive(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     query = tool_args["query"]
     file_types = tool_args.get("file_types")
@@ -748,7 +812,6 @@ async def _handle_search_drive(
     if not results:
         return "No files found matching your query.", []
 
-    citations: list[Citation] = []
     formatted_parts: list[str] = []
     for i, f in enumerate(results, 1):
         file_id = f.get("id", "")
@@ -757,18 +820,7 @@ async def _handle_search_drive(
         size = f.get("size", "")
         size_str = f" ({_format_size(int(size))})" if size else ""
         modified = f.get("modifiedTime", "")
-        web_link = f.get("webViewLink")
 
-        citations.append(
-            Citation(
-                chunk_id=f"drive-search-{file_id}",
-                file_id=file_id,
-                file_name=file_name,
-                source_url=web_link,
-                location=None,
-                snippet=f"Found via Drive search for '{query}'",
-            )
-        )
         formatted_parts.append(
             f"[Result {i}] {file_name}{size_str}\n"
             f"  ID: {file_id}\n"
@@ -776,7 +828,7 @@ async def _handle_search_drive(
             f"  Modified: {modified}\n"
         )
 
-    return f"Found {len(results)} files:\n\n" + "\n".join(formatted_parts), citations
+    return f"Found {len(results)} files:\n\n" + "\n".join(formatted_parts), []
 
 
 async def _handle_get_file_content(
@@ -786,6 +838,7 @@ async def _handle_get_file_content(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     file_id = tool_args["file_id"]
     max_chars = tool_args.get("max_chars", 50000)
@@ -860,6 +913,7 @@ async def _handle_search_within_file_text(
     search_service: "AzureSearchService",
     drive_service: "GoogleDriveService",
     embeddings_service: "EmbeddingsService",
+    tool_cache: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     file_id = tool_args["file_id"]
     query = tool_args["query"]

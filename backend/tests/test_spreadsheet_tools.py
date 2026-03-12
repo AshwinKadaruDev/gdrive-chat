@@ -59,15 +59,17 @@ class TestDownloadSpreadsheetBytes:
         drive_service.get_file_metadata.return_value = {
             "mimeType": GOOGLE_SHEET_MIME,
             "name": "My Sheet",
+            "webViewLink": "https://docs.google.com/spreadsheets/d/sheet1",
         }
         drive_service.export_google_doc.return_value = xlsx_bytes
 
-        content, name, mime = await _download_spreadsheet_bytes(
+        content, name, mime, web_link = await _download_spreadsheet_bytes(
             "sheet1", "token", drive_service
         )
 
         assert content == xlsx_bytes
         assert name == "My Sheet"
+        assert web_link == "https://docs.google.com/spreadsheets/d/sheet1"
         drive_service.export_google_doc.assert_called_once_with(
             file_id="sheet1",
             access_token="token",
@@ -84,12 +86,13 @@ class TestDownloadSpreadsheetBytes:
         }
         drive_service.download_file.return_value = xlsx_bytes
 
-        content, name, mime = await _download_spreadsheet_bytes(
+        content, name, mime, web_link = await _download_spreadsheet_bytes(
             "file1", "token", drive_service
         )
 
         assert content == xlsx_bytes
         assert name == "uploaded.xlsx"
+        assert web_link is None
         drive_service.download_file.assert_called_once()
         drive_service.export_google_doc.assert_not_called()
 
@@ -134,6 +137,7 @@ class TestReadSpreadsheetRowsGoogleSheet:
         drive_service.get_file_metadata.return_value = {
             "mimeType": GOOGLE_SHEET_MIME,
             "name": "Data Sheet",
+            "webViewLink": "https://docs.google.com/spreadsheets/d/sheet1",
         }
         drive_service.export_google_doc.return_value = xlsx_bytes
 
@@ -154,6 +158,36 @@ class TestReadSpreadsheetRowsGoogleSheet:
 
         assert "Alice" in result
         assert "Bob" in result
+
+    async def test_returns_citation_with_correct_location(
+        self, drive_service, xlsx_bytes, null_search, null_embeddings
+    ):
+        drive_service.get_file_metadata.return_value = {
+            "mimeType": GOOGLE_SHEET_MIME,
+            "name": "P&L Report.xlsx",
+            "webViewLink": "https://docs.google.com/spreadsheets/d/sheet1",
+        }
+        drive_service.export_google_doc.return_value = xlsx_bytes
+
+        _result, citations = await execute_tool(
+            tool_name="read_spreadsheet_rows",
+            tool_args={
+                "file_id": "sheet1",
+                "sheet_name": "Sheet1",
+                "start_row": 2,
+                "end_row": 3,
+            },
+            project_id="folder1",
+            access_token="token",
+            search_service=null_search,
+            drive_service=drive_service,
+            embeddings_service=null_embeddings,
+        )
+
+        assert len(citations) == 1
+        assert citations[0].file_name == "P&L Report.xlsx"
+        assert citations[0].location == "Sheet: Sheet1, Rows 2-3"
+        assert citations[0].source_url == "https://docs.google.com/spreadsheets/d/sheet1"
 
 
 class TestSearchSpreadsheetGoogleSheet:
@@ -180,6 +214,30 @@ class TestSearchSpreadsheetGoogleSheet:
 
         assert "Alice" in result
         assert "1 matching" in result
+
+    async def test_returns_citation(
+        self, drive_service, xlsx_bytes, null_search, null_embeddings
+    ):
+        drive_service.get_file_metadata.return_value = {
+            "mimeType": GOOGLE_SHEET_MIME,
+            "name": "Data Sheet",
+            "webViewLink": "https://docs.google.com/spreadsheets/d/sheet1",
+        }
+        drive_service.export_google_doc.return_value = xlsx_bytes
+
+        _result, citations = await execute_tool(
+            tool_name="search_spreadsheet",
+            tool_args={"file_id": "sheet1", "query": "Alice"},
+            project_id="folder1",
+            access_token="token",
+            search_service=null_search,
+            drive_service=drive_service,
+            embeddings_service=null_embeddings,
+        )
+
+        assert len(citations) == 1
+        assert citations[0].file_name == "Data Sheet"
+        assert "Alice" in citations[0].location
 
 
 class TestColumnStatsGoogleSheet:
@@ -211,3 +269,32 @@ class TestColumnStatsGoogleSheet:
         assert "Count: 2" in result
         assert "Sum: 30" in result
         assert "Mean: 15" in result
+
+    async def test_returns_citation(
+        self, drive_service, xlsx_bytes, null_search, null_embeddings
+    ):
+        drive_service.get_file_metadata.return_value = {
+            "mimeType": GOOGLE_SHEET_MIME,
+            "name": "Data Sheet",
+            "webViewLink": "https://docs.google.com/spreadsheets/d/sheet1",
+        }
+        drive_service.export_google_doc.return_value = xlsx_bytes
+
+        _result, citations = await execute_tool(
+            tool_name="get_column_stats",
+            tool_args={
+                "file_id": "sheet1",
+                "sheet_name": "Sheet1",
+                "column_name": "Value",
+            },
+            project_id="folder1",
+            access_token="token",
+            search_service=null_search,
+            drive_service=drive_service,
+            embeddings_service=null_embeddings,
+        )
+
+        assert len(citations) == 1
+        assert citations[0].file_name == "Data Sheet"
+        assert citations[0].location == "Sheet: Sheet1, Column: Value"
+        assert "Count: 2" in citations[0].snippet

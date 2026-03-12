@@ -1,4 +1,5 @@
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -16,9 +17,10 @@ SESSION_COOKIE_NAME = "session_id"
 # Session TTL in seconds (24 hours)
 SESSION_MAX_AGE = 60 * 60 * 24
 
-# In-memory set of explicitly-invalidated session tokens (e.g. from logout).
-# Only needs to survive until the token's TTL expires naturally.
-_revoked: set[str] = set()
+# In-memory dict of explicitly-invalidated session tokens (e.g. from logout).
+# Maps token → revocation timestamp.  Pruned on each new revocation so it
+# doesn't grow unboundedly.
+_revoked: dict[str, float] = {}
 
 
 def _get_fernet(settings: Settings) -> Fernet:
@@ -68,9 +70,18 @@ def validate_session(session_id: str, settings: Settings) -> Optional[str]:
         return None
 
 
+def _prune_revoked() -> None:
+    """Remove revoked tokens older than SESSION_MAX_AGE (they've expired anyway)."""
+    cutoff = time.time() - SESSION_MAX_AGE
+    expired = [tok for tok, ts in _revoked.items() if ts < cutoff]
+    for tok in expired:
+        del _revoked[tok]
+
+
 def delete_session(session_id: str) -> None:
     """Revoke a session token so it can't be reused before TTL expiry."""
-    _revoked.add(session_id)
+    _revoked[session_id] = time.time()
+    _prune_revoked()
 
 
 # ---------------------------------------------------------------------------

@@ -140,10 +140,11 @@ DRIVE_ONLY_TOOLS: list[dict] = [
             "name": "search_drive",
             "description": (
                 "Search for files in the Google Drive folder using keyword matching. "
-                "This is the primary search tool — use it to find files whose content "
-                "contains the given query terms. Returns file names, IDs, and snippets. "
+                "Use this as a secondary tool when get_folder_structure doesn't reveal "
+                "the right file — e.g. when you need to search inside file content "
+                "rather than by file name. Returns file names, IDs, and types. "
                 "Note: this uses Google Drive full-text search (keyword-based), not "
-                "semantic/vector search."
+                "semantic/vector search. It is unreliable for spreadsheet content."
             ),
             "parameters": {
                 "type": "object",
@@ -235,9 +236,10 @@ SHARED_TOOLS: list[dict] = [
         "function": {
             "name": "get_folder_structure",
             "description": (
-                "Get the complete folder and file structure of the project. Returns "
-                "a tree view showing all files and sub-folders with their names, types, "
-                "and sizes. Use this to understand what files are available before searching."
+                "CALL THIS FIRST. Get the complete folder and file structure of the "
+                "project. Returns a tree view showing all files and sub-folders with "
+                "their names, types, sizes, and IDs. File names are usually descriptive "
+                "enough to identify what you need without further searching."
             ),
             "parameters": {
                 "type": "object",

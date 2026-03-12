@@ -1,5 +1,11 @@
-# production-db.ps1 - Manage Supabase production database from local machine
+# production-db.ps1 — Smart production database manager
 # Usage: .\production-db.ps1
+#
+# What it does:
+#   1. Connects to Supabase using .env.production
+#   2. Detects current migration state
+#   3. Applies pending migrations (or reports "already up to date")
+#   4. Shows a table summary with row counts
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
@@ -10,17 +16,17 @@ Write-Host "  Production Database Manager" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# -- Parse .env.production ------------------------------------------------
+# -- Parse .env.production ---------------------------------------------------
 
 $envFile = Join-Path $ProjectRoot ".env.production"
 if (-not (Test-Path $envFile)) {
-    Write-Host "ERROR: .env.production not found at $envFile" -ForegroundColor Red
+    Write-Host "ERROR: .env.production not found." -ForegroundColor Red
+    Write-Host "  Run .\setup.ps1 or copy .env.production.example to .env.production" -ForegroundColor Gray
     exit 1
 }
 
 $envContent = Get-Content $envFile -Raw
 
-# Extract DATABASE_URL
 if ($envContent -match '(?m)^DATABASE_URL=(.+)$') {
     $databaseUrl = $Matches[1].Trim()
 } else {
@@ -28,21 +34,11 @@ if ($envContent -match '(?m)^DATABASE_URL=(.+)$') {
     exit 1
 }
 
-# Extract ADMINS
-if ($envContent -match '(?m)^ADMINS=(.+)$') {
-    $admins = $Matches[1].Trim()
-} else {
-    Write-Host "ERROR: ADMINS not found in .env.production" -ForegroundColor Red
-    exit 1
-}
-
-# Show connection info (mask password)
 $maskedUrl = $databaseUrl -replace '(://[^:]+:)[^@]+(@)', '${1}****${2}'
 Write-Host "  Database: $maskedUrl" -ForegroundColor Gray
-Write-Host "  Admins:   $admins" -ForegroundColor Gray
 Write-Host ""
 
-# -- Activate venv --------------------------------------------------------
+# -- Activate venv -----------------------------------------------------------
 
 $venvActivate = Join-Path $ProjectRoot "backend\venv\Scripts\Activate.ps1"
 if (-not (Test-Path $venvActivate)) {
@@ -51,12 +47,11 @@ if (-not (Test-Path $venvActivate)) {
 }
 & $venvActivate
 
-# -- Set env vars (override local .env) -----------------------------------
+# -- Set env vars ------------------------------------------------------------
 
 $env:DATABASE_URL = $databaseUrl
-$env:ADMINS = $admins
 
-# -- Helper: run external command (alembic/python write INFO to stderr) ---
+# -- Helper ------------------------------------------------------------------
 
 function Invoke-External {
     param([string]$Command, [string[]]$CmdArgs)
@@ -68,9 +63,13 @@ function Invoke-External {
     return $output
 }
 
-# -- Test connection ------------------------------------------------------
+# Regex to extract 12-char hex revision from alembic output
+# Using \w instead of [0-9a-f] to avoid PowerShell type-parsing issues
+$revPattern = "(\w{12})"
 
-Write-Host "Testing connection..." -ForegroundColor Yellow
+# -- Test connection ---------------------------------------------------------
+
+Write-Host "[1/3] Testing connection..." -ForegroundColor Yellow
 Set-Location (Join-Path $ProjectRoot "backend")
 
 $currentOutput = Invoke-External alembic @("current")
@@ -80,62 +79,68 @@ if ($script:lastExit -ne 0) {
     Write-Host ""
     Write-Host "  Troubleshooting:" -ForegroundColor Yellow
     Write-Host "  - Check DATABASE_URL in .env.production" -ForegroundColor Gray
-    Write-Host "  - If IPv4 issue, use the Session Pooler URL from Supabase dashboard" -ForegroundColor Gray
+    Write-Host "  - Password special chars must be percent-encoded (@ -> %40, # -> %23, + -> %2B, / -> %2F)" -ForegroundColor Gray
+    Write-Host "  - Use the Session Pooler URL from Supabase (IPv4 compatible)" -ForegroundColor Gray
+    Write-Host "  - Direct connection requires IPv6 - will not work on most networks or Azure" -ForegroundColor Gray
     Set-Location $ProjectRoot
     exit 1
 }
 Write-Host "  Connected!" -ForegroundColor Green
 
+# -- Detect migration state --------------------------------------------------
+
 Write-Host ""
+Write-Host "[2/3] Checking migration state..." -ForegroundColor Yellow
 
-# -- Prompt for action ----------------------------------------------------
+$currentRev = ""
+if ($currentOutput -match $revPattern) {
+    $currentRev = $Matches[1]
+    Write-Host "  Current revision: $currentRev" -ForegroundColor Gray
+} else {
+    Write-Host "  No migrations applied yet (fresh database)" -ForegroundColor Gray
+}
 
-Write-Host "Choose an action:" -ForegroundColor White
-Write-Host "  [U] Upgrade (default) - apply new migrations, keep existing data" -ForegroundColor Green
-Write-Host "  [R] Reset - DROP all tables, re-migrate, re-seed from JSON" -ForegroundColor Red
+$headOutput = Invoke-External alembic @("heads")
+$headRev = ""
+if ($headOutput -match $revPattern) {
+    $headRev = $Matches[1]
+    Write-Host "  Target revision:  $headRev" -ForegroundColor Gray
+}
+
+# -- Apply migrations --------------------------------------------------------
+
 Write-Host ""
-$choice = Read-Host "Enter choice (U/r)"
+Write-Host "[3/3] Applying migrations..." -ForegroundColor Yellow
 
-if ($choice -eq "r" -or $choice -eq "R") {
-    # -- Destructive reset ------------------------------------------------
-    Write-Host ""
-    Write-Host "  WARNING: This will clear workflow data in the production database!" -ForegroundColor Red
-    Write-Host "  Contacts, groups, reports, claims will be wiped and re-seeded." -ForegroundColor Yellow
-    Write-Host "  Usage tracking data will be preserved." -ForegroundColor Gray
-    Write-Host ""
-    $confirm = Read-Host "  Type 'yes' to confirm reset"
-
-    if ($confirm -ne "yes") {
-        Write-Host "  Aborted." -ForegroundColor Yellow
-        Set-Location $ProjectRoot
-        exit 0
+if ($currentRev -eq $headRev -and $currentRev -ne "") {
+    Write-Host "  Already up to date!" -ForegroundColor Green
+} else {
+    if ($currentRev -eq "") {
+        Write-Host "  Initializing database from scratch..." -ForegroundColor Gray
+    } else {
+        Write-Host "  Upgrading from $currentRev to $headRev..." -ForegroundColor Gray
     }
 
-    Write-Host ""
-    Write-Host "  Resetting production database..." -ForegroundColor Yellow
-
-    # Truncate workflow tables (preserves usage_daily + organizations)
-    Write-Host "  [1/2] Clearing workflow tables..." -ForegroundColor Gray
-    Invoke-External python @("scripts/reset_seed_tables.py") | Out-Null
-    if ($script:lastExit -ne 0) { throw "Reset failed" }
-    Write-Host "  [1/2] Workflow tables cleared (usage preserved)." -ForegroundColor Green
-
-    # Seed
-    Write-Host "  [2/2] Seeding from data/*.json..." -ForegroundColor Gray
-    Invoke-External python @("scripts/migrate_json_to_pg.py") | Out-Null
-    if ($script:lastExit -ne 0) { throw "Seed script failed" }
-    Write-Host "  [2/2] Database seeded!" -ForegroundColor Green
-
-} else {
-    # -- Safe upgrade -----------------------------------------------------
-    Write-Host ""
-    Write-Host "  Applying migrations..." -ForegroundColor Yellow
-    Invoke-External alembic @("upgrade", "head") | Out-Null
-    if ($script:lastExit -ne 0) { throw "alembic upgrade head failed" }
+    $upgradeOutput = Invoke-External alembic @("upgrade", "head")
+    if ($script:lastExit -ne 0) {
+        Write-Host "  ERROR: Migration failed!" -ForegroundColor Red
+        Write-Host "  $($upgradeOutput.Trim())" -ForegroundColor Red
+        Set-Location $ProjectRoot
+        exit 1
+    }
     Write-Host "  Migrations applied!" -ForegroundColor Green
 }
 
-# -- Done -----------------------------------------------------------------
+# -- Show table summary ------------------------------------------------------
+
+Write-Host ""
+Write-Host "  Table summary:" -ForegroundColor Cyan
+
+$PythonExe = Join-Path $ProjectRoot "backend\venv\Scripts\python.exe"
+$summaryScript = Join-Path $ProjectRoot "backend\scripts\table_summary.py"
+& $PythonExe $summaryScript
+
+# -- Done --------------------------------------------------------------------
 
 Set-Location $ProjectRoot
 

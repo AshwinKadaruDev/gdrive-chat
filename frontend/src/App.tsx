@@ -6,6 +6,8 @@ import LandingPage from "@/components/auth/LandingPage";
 import ProjectList from "@/components/knowledge/ProjectList";
 import UnifiedChatContainer from "@/components/chat/UnifiedChatContainer";
 
+console.log(`%cTenex v${__APP_VERSION__}`, "color: #6d8af0; font-weight: bold");
+
 function AuthenticatedLayout() {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-surface-950">
@@ -41,6 +43,12 @@ export default function App() {
       fetchUser();
     }
   }, [hasChecked, fetchUser]);
+
+  useEffect(() => {
+    const handler = () => useAuth.getState().logout();
+    window.addEventListener("auth:session-expired", handler);
+    return () => window.removeEventListener("auth:session-expired", handler);
+  }, []);
 
   if (isLoading && !hasChecked) {
     return (

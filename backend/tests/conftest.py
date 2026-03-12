@@ -47,6 +47,7 @@ async def test_client(mock_user):
         transport=ASGITransport(app=app),
         base_url="http://test",
         cookies={SESSION_COOKIE_NAME: session_token},
+        headers={"X-Requested-With": "XMLHttpRequest"},
     ) as client:
         yield client
     app.dependency_overrides.clear()

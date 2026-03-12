@@ -22,6 +22,9 @@ class GoogleDriveService:
 
     FIELDS = "files(id,name,mimeType,size,modifiedTime,parents,webViewLink)"
 
+    def __init__(self) -> None:
+        self._folder_tree_cache: dict[str, list[dict]] = {}
+
     async def list_folder(
         self, folder_id: str, access_token: str
     ) -> list[dict]:
@@ -158,7 +161,12 @@ class GoogleDriveService:
         headers = {"Authorization": f"Bearer {access_token}"}
 
         # Collect all folder IDs (root + subfolders) for recursive search
-        all_items = await self.list_folder(folder_id, access_token)
+        # Use per-instance cache to avoid re-listing within the same request
+        if folder_id in self._folder_tree_cache:
+            all_items = self._folder_tree_cache[folder_id]
+        else:
+            all_items = await self.list_folder(folder_id, access_token)
+            self._folder_tree_cache[folder_id] = all_items
         folder_ids = [folder_id] + [
             f["id"] for f in all_items
             if f.get("mimeType") == "application/vnd.google-apps.folder"

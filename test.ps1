@@ -6,7 +6,7 @@ function Write-Step($n, $total, $msg) {
     Write-Host "`n[$n/$total] $msg" -ForegroundColor Cyan
 }
 
-$totalSteps = 3
+$totalSteps = 4
 
 # ── Backend tests ────────────────────────────────────────────────────
 Write-Step 1 $totalSteps "Backend tests (pytest)"
@@ -40,6 +40,17 @@ $tscExit = $LASTEXITCODE
 $ErrorActionPreference = "Stop"
 Pop-Location
 
+# ── Frontend build check ────────────────────────────────────────
+Write-Step 4 $totalSteps "Frontend build"
+Push-Location frontend
+$ErrorActionPreference = "Continue"
+$buildOut = npx vite build 2>&1 | Out-String
+$buildExit = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+Pop-Location
+
+if ($buildExit -eq 0) { Write-Host "  Build succeeded" }
+
 # ── Summary ──────────────────────────────────────────────────────────
 Write-Host ""
 if ($backendExit -ne 0)  { Write-Host "  Backend:    FAILED" -ForegroundColor Red }
@@ -48,11 +59,14 @@ if ($frontendExit -ne 0) { Write-Host "  Frontend:   FAILED" -ForegroundColor Re
 else                      { Write-Host "  Frontend:   PASSED" -ForegroundColor Green }
 if ($tscExit -ne 0)      { Write-Host "  TypeScript: FAILED" -ForegroundColor Red }
 else                      { Write-Host "  TypeScript: PASSED" -ForegroundColor Green }
+if ($buildExit -ne 0)    { Write-Host "  Build:      FAILED" -ForegroundColor Red }
+else                      { Write-Host "  Build:      PASSED" -ForegroundColor Green }
 
-if ($backendExit -ne 0 -or $frontendExit -ne 0 -or $tscExit -ne 0) {
+if ($backendExit -ne 0 -or $frontendExit -ne 0 -or $tscExit -ne 0 -or $buildExit -ne 0) {
     if ($backendExit -ne 0)  { Write-Host "`n--- Backend output ---" -ForegroundColor Yellow; Write-Host $backendOut }
     if ($frontendExit -ne 0) { Write-Host "`n--- Frontend output ---" -ForegroundColor Yellow; Write-Host $frontendOut }
     if ($tscExit -ne 0)      { Write-Host "`n--- TypeScript output ---" -ForegroundColor Yellow; Write-Host $tscOut }
+    if ($buildExit -ne 0)    { Write-Host "`n--- Build output ---" -ForegroundColor Yellow; Write-Host $buildOut }
     Write-Host ""
     throw "Tests failed"
 }

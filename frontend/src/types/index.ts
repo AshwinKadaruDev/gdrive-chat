@@ -52,9 +52,4 @@ export interface Citation {
   snippet: string;
 }
 
-export interface SendMessageResponse {
-  message: Message;
-  session_id: string;
-}
-
 export type AgentType = "RAG" | "DRIVE";

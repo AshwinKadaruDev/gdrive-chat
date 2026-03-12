@@ -38,7 +38,8 @@ if database_url:
     # Ensure the URL uses the asyncpg driver
     if database_url.startswith("postgresql://"):
         database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    config.set_main_option("sqlalchemy.url", database_url)
+    # Escape % for configparser (e.g. percent-encoded passwords like %40 for @)
+    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

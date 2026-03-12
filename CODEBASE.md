@@ -94,7 +94,8 @@ tenex/
 │   ├── tests/
 │   │   ├── conftest.py              # Fixtures: test_client, unauthed_client, mock_user
 │   │   ├── test_drive_agent_tools.py # Drive agent tool definition tests
-│   │   ├── test_drive_tool_handlers.py # Drive tool handler tests
+│   │   ├── test_drive_tool_handlers.py # Drive tool handler tests (search_drive, get_file_content, search_within_file_text)
+│   │   ├── test_spreadsheet_tools.py # Spreadsheet tool handler tests (_download_spreadsheet_bytes, overview, rows, search, stats + citations)
 │   │   └── __init__.py
 │   ├── pytest.ini                    # asyncio_mode=auto, testpaths=tests
 │   └── requirements.txt
@@ -380,7 +381,7 @@ ReAct loop that answers questions by iteratively calling tools and reasoning.
 
 **Two system prompts**:
 - `SYSTEM_PROMPT` (RAG): Instructs agent to use `hybrid_search` as primary search, cite sources, handle spreadsheets/documents.
-- `DRIVE_SYSTEM_PROMPT` (Drive): Instructs agent to use `search_drive` as primary search (keyword-based, not semantic), fall back to `get_folder_structure`, read files via `get_file_content`.
+- `DRIVE_SYSTEM_PROMPT` (Drive): Instructs agent to use `get_folder_structure` first (file names are usually descriptive enough), then go directly to the needed file. `search_drive` is a secondary fallback for content-based search when folder browsing isn't enough.
 
 **AgentResponse dataclass**: `content: str`, `citations: list[Citation]`, `iterations: int`, `hit_limit: bool`
 
@@ -418,7 +419,7 @@ All defined in OpenAI function calling schema format (converted to Anthropic for
 
 | # | Tool | Required Args | Optional Args | Description |
 |---|------|--------------|---------------|-------------|
-| 1 | `search_drive` | `query` | `file_types[]` | Search files via Drive `fullText contains` keyword search |
+| 1 | `search_drive` | `query` | `file_types[]` | Secondary file search via Drive `fullText contains` keyword search (no citations — discovery only) |
 | 2 | `get_file_content` | `file_id` | `max_chars` (default 50000) | Download + parse full file text (PDF/DOCX/Docs/text) |
 | 3 | `search_within_file_text` | `file_id`, `query` | `context_chars` (default 200) | Case-insensitive text search within a downloaded file |
 
@@ -426,17 +427,17 @@ All defined in OpenAI function calling schema format (converted to Anthropic for
 
 | # | Tool | Required Args | Optional Args | Description |
 |---|------|--------------|---------------|-------------|
-| 1 | `get_folder_structure` | — | — | ASCII tree of all files/folders with sizes and IDs |
+| 1 | `get_folder_structure` | — | — | CALL THIS FIRST. ASCII tree of all files/folders with sizes and IDs. Caches result on `drive_service._folder_tree_cache` |
 | 2 | `get_file_metadata` | `file_id` | — | File details: name, type, size, modified, Drive link |
 | 3 | `read_document_pages` | `file_id`, `start_page`, `end_page` | — | Read specific pages (Google Docs/PDF/DOCX, ~3000 chars/page) |
 | 4 | `get_spreadsheet_overview` | `file_id` | — | Sheet names, row/col counts, headers, sample rows |
-| 5 | `read_spreadsheet_rows` | `file_id`, `sheet_name`, `start_row`, `end_row` | — | Read specific row range from a sheet |
-| 6 | `search_spreadsheet` | `file_id`, `query` | `sheet_name` | Find values in cells (max 50 matches) |
-| 7 | `get_column_stats` | `file_id`, `sheet_name`, `column_name` | — | Count, sum, mean, median, min, max, stddev |
+| 5 | `read_spreadsheet_rows` | `file_id`, `sheet_name`, `start_row`, `end_row` | — | Read specific row range from a sheet (returns 1 citation) |
+| 6 | `search_spreadsheet` | `file_id`, `query` | `sheet_name` | Find values in cells (max 50 matches, returns 1 citation) |
+| 7 | `get_column_stats` | `file_id`, `sheet_name`, `column_name` | — | Count, sum, mean, median, min, max, stddev (returns 1 citation) |
 | 8 | `report_inability` | `reason` | — | Report that the question can't be answered |
 | 9 | `request_clarification` | `question` | — | Ask user for more details |
 
-**Tool execution** (`tool_executor.py`): Dispatches to `_handle_*` async functions (16 total). RAG search tools embed the query via `embeddings_service.get_embedding()` before calling Azure Search. Drive tools call `drive_service` directly for file search/download/parsing. Spreadsheet tools download files via Drive API and parse with openpyxl.
+**Tool execution** (`tool_executor.py`): Dispatches to `_handle_*` async functions (16 total). RAG search tools embed the query via `embeddings_service.get_embedding()` before calling Azure Search. Drive tools call `drive_service` directly for file search/download/parsing. Spreadsheet tools download files via `_download_spreadsheet_bytes` (returns `bytes, file_name, mime_type, web_view_link`; caches in `tool_cache`) and parse with openpyxl. **Citation policy**: content-reading tools (`get_file_content`, `read_spreadsheet_rows`, `search_spreadsheet`, `get_column_stats`, `hybrid_search`, etc.) produce citations; discovery-only tools (`search_drive`, `get_folder_structure`, `get_file_metadata`) do not.
 
 ### LLM Multi-Provider (`services/llm.py`)
 

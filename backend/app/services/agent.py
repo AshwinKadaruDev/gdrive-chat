@@ -73,22 +73,24 @@ via the Google Drive API — there is no pre-built search index.
 
 WHEN TO USE TOOLS vs. ANSWER DIRECTLY:
 - If the user asks about specific facts, data, or content from the Drive files → \
-search and read the files before answering.
+browse and read the files before answering.
 - If the answer is already in the conversation history (e.g. a follow-up about \
 something you just found) → answer directly from context without searching again.
 - If the user asks a general knowledge question → answer directly. No tools needed.
-- When in doubt about whether information is in the files, search first.
+- When in doubt about whether information is in the files, look first.
 
 RULES:
-1. Use search_drive as your primary search tool to find relevant files by keyword.
-2. After finding files, use get_file_content to read their full text, or \
-search_within_file_text for targeted lookups within a specific file.
-3. If search_drive returns no results, try get_folder_structure to see all \
-available files, then read promising ones directly.
+1. ALWAYS start with get_folder_structure to see what files exist. File names are \
+usually descriptive enough to identify what you need.
+2. Go directly to the files you need: for spreadsheets → get_spreadsheet_overview → \
+read_spreadsheet_rows or search_spreadsheet; for documents → get_file_content or \
+read_document_pages.
+3. Use search_drive only when you cannot identify the right file from the folder \
+structure (e.g. you need to search inside file content, not file names).
 4. If you cannot find the answer after thorough searching, use report_inability.
 5. If the question is ambiguous, use request_clarification.
 6. Be precise and quote relevant text when appropriate.
-7. For spreadsheet questions, use get_spreadsheet_overview first.
+7. If you find partial information, say so explicitly rather than making up the rest.
 
 RESPONSE FORMAT:
 - Write in clear Markdown. Use headings, bullets, or tables only when they help \
@@ -97,11 +99,7 @@ structure a complex answer — not for short replies.
 after the claim they support. The system attaches source details automatically.
 - Example: "Revenue grew 15% year-over-year [1], driven primarily by the APAC region [2]."
 - For conversational or general-knowledge answers, write naturally without citations \
-or heavy formatting.
-
-Note: search_drive uses Google Drive keyword search (fullText contains), \
-not semantic search. Use specific, targeted keywords for best results. \
-If one query doesn't work, try alternative terms.\
+or heavy formatting.\
 """
 
 
@@ -133,6 +131,7 @@ class FolderAgent:
         self.max_iterations = max_iterations
         self.tools = tools if tools is not None else ALL_TOOL_DEFINITIONS
         self.system_prompt = system_prompt if system_prompt is not None else SYSTEM_PROMPT
+        self.tool_cache: dict = {}
 
     async def answer(
         self,
@@ -182,11 +181,23 @@ class FolderAgent:
             logger.info("Agent iteration %d/%d", iteration, self.max_iterations)
 
             # Call LLM with tools
-            response = await self.llm_client.call_with_tools(
-                messages=messages,
-                tools=self.tools,
-                model=self.model,
-            )
+            try:
+                response = await self.llm_client.call_with_tools(
+                    messages=messages,
+                    tools=self.tools,
+                    model=self.model,
+                )
+            except Exception as exc:
+                logger.error("LLM call failed on iteration %d: %s", iteration, exc, exc_info=True)
+                return AgentResponse(
+                    content=(
+                        "I'm sorry, something went wrong while processing your request. "
+                        "Please try again."
+                    ),
+                    citations=all_citations,
+                    iterations=iteration,
+                    hit_limit=False,
+                )
 
             choice = response.choices[0]
             assistant_message = choice.message
@@ -242,7 +253,15 @@ class FolderAgent:
                 try:
                     tool_args = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
-                    tool_args = {}
+                    logger.warning("Malformed JSON in tool args for %s: %s", tool_name, tc.function.arguments)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": f"Invalid JSON in tool arguments: {tc.function.arguments}. Please provide valid JSON.",
+                        }
+                    )
+                    continue
 
                 logger.info("Executing tool: %s(%s)", tool_name, tool_args)
 
@@ -254,6 +273,7 @@ class FolderAgent:
                     search_service=self.search_service,
                     drive_service=self.drive_service,
                     embeddings_service=self.embeddings_service,
+                    tool_cache=self.tool_cache,
                 )
 
                 all_citations.extend(citations)
@@ -342,15 +362,37 @@ class FolderAgent:
 
             # Stream the LLM call — yields text deltas (for final answers) and a response_complete event
             llm_response = None
-            async for event in self.llm_client.stream_call_with_tools(
-                messages=messages,
-                tools=self.tools,
-                model=self.model,
-            ):
-                if event.type == "text_delta" and event.text:
-                    yield ("delta", event.text)
-                elif event.type == "response_complete":
-                    llm_response = event.response
+            try:
+                async for event in self.llm_client.stream_call_with_tools(
+                    messages=messages,
+                    tools=self.tools,
+                    model=self.model,
+                ):
+                    if event.type == "text_delta" and event.text:
+                        yield ("delta", event.text)
+                    elif event.type == "response_complete":
+                        llm_response = event.response
+            except Exception as exc:
+                logger.error("[AGENT-STREAM] LLM call failed on iteration %d: %s", iteration, exc, exc_info=True)
+                yield ("delta", "I'm sorry, something went wrong while processing your request. Please try again.")
+                # Deduplicate and serialize citations collected so far
+                seen: set[tuple[str, str | None]] = set()
+                unique_citations: list[Citation] = []
+                for c in all_citations:
+                    key = (c.file_id, c.location)
+                    if key not in seen:
+                        seen.add(key)
+                        unique_citations.append(c)
+                yield ("citations", [
+                    {
+                        "chunk_id": c.chunk_id, "file_id": c.file_id,
+                        "file_name": c.file_name, "source_url": c.source_url,
+                        "location": c.location, "snippet": c.snippet,
+                    }
+                    for c in unique_citations
+                ])
+                yield ("done", None)
+                return
 
             if llm_response is None:
                 logger.error("[AGENT-STREAM] No response_complete event received")
@@ -428,7 +470,13 @@ class FolderAgent:
                 try:
                     tool_args = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
-                    tool_args = {}
+                    logger.warning("[AGENT-STREAM] Malformed JSON in tool args for %s: %s", tool_name, tc.function.arguments)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": f"Invalid JSON in tool arguments: {tc.function.arguments}. Please provide valid JSON.",
+                    })
+                    continue
 
                 logger.info("[AGENT-STREAM] Calling tool: %s(%s)", tool_name, tool_args)
                 yield ("status", _TOOL_STATUS.get(tool_name, f"Using {tool_name}..."))
@@ -441,6 +489,7 @@ class FolderAgent:
                     search_service=self.search_service,
                     drive_service=self.drive_service,
                     embeddings_service=self.embeddings_service,
+                    tool_cache=self.tool_cache,
                 )
                 logger.info(
                     "[AGENT-STREAM] Tool %s returned: %d chars, %d citations",
@@ -453,9 +502,23 @@ class FolderAgent:
                     "content": result_str,
                 })
 
-        # Hit max iterations
+        # Hit max iterations — still emit accumulated citations
         yield ("delta", "I reached my maximum number of reasoning steps. The answer may be incomplete.")
-        yield ("citations", [])
+        seen_max: set[tuple[str, str | None]] = set()
+        unique_max: list[Citation] = []
+        for c in all_citations:
+            key = (c.file_id, c.location)
+            if key not in seen_max:
+                seen_max.add(key)
+                unique_max.append(c)
+        yield ("citations", [
+            {
+                "chunk_id": c.chunk_id, "file_id": c.file_id,
+                "file_name": c.file_name, "source_url": c.source_url,
+                "location": c.location, "snippet": c.snippet,
+            }
+            for c in unique_max
+        ])
         yield ("done", None)
 
     # ------------------------------------------------------------------ #

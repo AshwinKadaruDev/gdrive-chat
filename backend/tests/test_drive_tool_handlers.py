@@ -52,9 +52,9 @@ class TestSearchDrive:
 
         assert "Found 1 files" in result
         assert "report.pdf" in result
-        assert len(citations) == 1
-        assert citations[0].file_id == "file1"
-        assert citations[0].file_name == "report.pdf"
+        # search_drive is a discovery tool — no citations (those come from
+        # content-reading tools like get_file_content or read_spreadsheet_rows)
+        assert citations == []
         drive_service.search_files.assert_called_once_with(
             folder_id="folder123",
             query="quarterly report",
