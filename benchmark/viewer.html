@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Benchmark Results Viewer</title>
+<style>
+  :root {
+    --bg: #0f0f1a;
+    --surface: #1a1a2e;
+    --surface2: #242440;
+    --border: #2e2e4a;
+    --text: #e0e0f0;
+    --text-dim: #8888aa;
+    --pass: #22c55e;
+    --partial: #eab308;
+    --fail: #ef4444;
+    --error: #6b7280;
+    --accent: #6366f1;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+  .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 1.5rem; margin-bottom: 8px; }
+  h2 { font-size: 1.1rem; margin-bottom: 12px; color: var(--text-dim); }
+  h3 { font-size: 1rem; margin-bottom: 8px; }
+
+  /* Drop zone */
+  #drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 60px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    margin: 40px auto;
+    max-width: 600px;
+  }
+  #drop-zone:hover, #drop-zone.dragover {
+    border-color: var(--accent);
+    background: rgba(99, 102, 241, 0.05);
+  }
+  #drop-zone p { color: var(--text-dim); margin-bottom: 12px; }
+  #drop-zone .btn {
+    display: inline-block;
+    padding: 10px 24px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+  #file-input { display: none; }
+
+  /* Dashboard */
+  #dashboard { display: none; }
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+  .stat-card .value { font-size: 1.8rem; font-weight: 700; }
+  .stat-card .label { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat-card.pass .value { color: var(--pass); }
+  .stat-card.partial .value { color: var(--partial); }
+  .stat-card.fail .value { color: var(--fail); }
+
+  /* Color bar */
+  .color-bar {
+    display: flex;
+    height: 8px;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+  .color-bar .segment { transition: width 0.3s; }
+  .color-bar .pass-seg { background: var(--pass); }
+  .color-bar .partial-seg { background: var(--partial); }
+  .color-bar .fail-seg { background: var(--fail); }
+  .color-bar .error-seg { background: var(--error); }
+
+  /* Difficulty table */
+  .diff-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+    font-size: 0.85rem;
+  }
+  .diff-table th, .diff-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+  .diff-table th { color: var(--text-dim); font-weight: 600; }
+  .diff-table tr:hover { background: var(--surface2); }
+
+  /* Filters */
+  .filters {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .filters select, .filters input {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+  }
+  .filters input { flex: 1; min-width: 200px; }
+  .export-btn {
+    padding: 6px 16px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    margin-left: auto;
+  }
+  .export-btn:hover { border-color: var(--accent); }
+
+  /* Results table */
+  .results-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+  .results-table th {
+    padding: 10px 12px;
+    border-bottom: 2px solid var(--border);
+    text-align: left;
+    color: var(--text-dim);
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .results-table th:hover { color: var(--text); }
+  .results-table th .sort-arrow { margin-left: 4px; font-size: 0.7rem; }
+  .results-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .results-table tr { cursor: pointer; transition: background 0.15s; }
+  .results-table tr:hover { background: var(--surface2); }
+  .results-table tr.selected { background: var(--surface2); }
+
+  .verdict-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .verdict-pass { background: rgba(34, 197, 94, 0.15); color: var(--pass); }
+  .verdict-partial { background: rgba(234, 179, 8, 0.15); color: var(--partial); }
+  .verdict-fail { background: rgba(239, 68, 68, 0.15); color: var(--fail); }
+  .verdict-error { background: rgba(107, 114, 128, 0.15); color: var(--error); }
+
+  .q-text { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Detail panel */
+  #detail-panel {
+    display: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin-top: 20px;
+  }
+  .detail-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+  .detail-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1.5rem;
+    cursor: pointer;
+  }
+  .detail-section {
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .detail-section:last-child { border-bottom: none; }
+  .detail-section h3 { margin-bottom: 8px; }
+
+  .side-by-side {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .side-by-side > div {
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 12px;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .side-by-side .label-tag {
+    display: inline-block;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+    letter-spacing: 0.05em;
+  }
+
+  .fact-list { list-style: none; padding: 0; }
+  .fact-list li {
+    padding: 4px 8px;
+    margin-bottom: 4px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+  }
+  .fact-missing { background: rgba(239, 68, 68, 0.1); border-left: 3px solid var(--fail); }
+  .fact-hallucinated { background: rgba(234, 179, 8, 0.1); border-left: 3px solid var(--partial); }
+
+  .source-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+  }
+  .source-table th, .source-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+  .source-found { color: var(--pass); }
+  .source-missed { color: var(--fail); }
+  .source-extra { color: var(--partial); }
+
+  /* Trace timeline */
+  .trace-timeline { margin-top: 8px; }
+  .trace-iter {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    overflow: hidden;
+  }
+  .trace-iter-header {
+    padding: 8px 12px;
+    background: var(--surface2);
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    user-select: none;
+  }
+  .trace-iter-header:hover { background: var(--border); }
+  .trace-iter-body {
+    display: none;
+    padding: 12px;
+    font-size: 0.8rem;
+  }
+  .trace-iter.open .trace-iter-body { display: block; }
+  .trace-assistant {
+    background: var(--bg);
+    border-radius: 4px;
+    padding: 8px;
+    margin-bottom: 8px;
+    white-space: pre-wrap;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+  .trace-tool {
+    background: var(--bg);
+    border-radius: 4px;
+    padding: 8px;
+    margin-bottom: 6px;
+    border-left: 3px solid var(--accent);
+  }
+  .trace-tool-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+  .trace-tool-args {
+    font-family: monospace;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+  .trace-tool-result {
+    background: var(--surface);
+    border-radius: 4px;
+    padding: 6px;
+    font-family: monospace;
+    font-size: 0.75rem;
+    max-height: 120px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    cursor: pointer;
+  }
+  .trace-tool-result.expanded { max-height: none; }
+  .trace-tool-error { color: var(--fail); }
+
+  @media (max-width: 768px) {
+    .side-by-side { grid-template-columns: 1fr; }
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Benchmark Results Viewer</h1>
+
+  <!-- Drop zone -->
+  <div id="drop-zone">
+    <p>Drop a benchmark results JSON file here</p>
+    <button class="btn" onclick="document.getElementById('file-input').click()">Choose File</button>
+    <input type="file" id="file-input" accept=".json">
+  </div>
+
+  <!-- Dashboard (hidden until file loaded) -->
+  <div id="dashboard">
+    <h2 id="run-info"></h2>
+
+    <!-- Color bar -->
+    <div class="color-bar" id="color-bar"></div>
+
+    <!-- Stats cards -->
+    <div class="stats-grid" id="stats-grid"></div>
+
+    <!-- Difficulty breakdown -->
+    <table class="diff-table" id="diff-table">
+      <thead><tr><th>Difficulty</th><th>Total</th><th>Pass</th><th>Partial</th><th>Fail</th><th>Pass Rate</th><th>Avg Score</th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <!-- Filters -->
+    <div class="filters">
+      <select id="filter-difficulty"><option value="">All Difficulties</option><option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option></select>
+      <select id="filter-verdict"><option value="">All Verdicts</option><option value="pass">Pass</option><option value="partial">Partial</option><option value="fail">Fail</option><option value="error">Error</option></select>
+      <input type="text" id="filter-search" placeholder="Search questions and answers...">
+      <button class="export-btn" id="export-btn">Copy Summary as Markdown</button>
+    </div>
+
+    <!-- Results table -->
+    <table class="results-table" id="results-table">
+      <thead>
+        <tr>
+          <th data-sort="id">ID <span class="sort-arrow"></span></th>
+          <th data-sort="difficulty">Difficulty <span class="sort-arrow"></span></th>
+          <th data-sort="question">Question <span class="sort-arrow"></span></th>
+          <th data-sort="verdict">Verdict <span class="sort-arrow"></span></th>
+          <th data-sort="answer_score">Answer <span class="sort-arrow"></span></th>
+          <th data-sort="source_score">Source <span class="sort-arrow"></span></th>
+          <th data-sort="iterations">Iters <span class="sort-arrow"></span></th>
+          <th data-sort="duration">Duration <span class="sort-arrow"></span></th>
+        </tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+
+    <!-- Detail panel -->
+    <div id="detail-panel">
+      <div class="detail-header">
+        <h3 id="detail-title"></h3>
+        <button class="detail-close" onclick="closeDetail()">&times;</button>
+      </div>
+      <div id="detail-content"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let data = null;
+let sortKey = 'id';
+let sortAsc = true;
+let selectedId = null;
+
+// File loading
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files.length) loadFile(fileInput.files[0]); });
+
+function loadFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      data = JSON.parse(e.target.result);
+      render();
+    } catch (err) {
+      alert('Invalid JSON file: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function render() {
+  document.getElementById('drop-zone').style.display = 'none';
+  document.getElementById('dashboard').style.display = 'block';
+
+  const s = data.summary || {};
+  const c = data.config || {};
+
+  // Run info
+  document.getElementById('run-info').textContent =
+    `Run: ${data.run_id?.slice(0, 8) || '?'} | Model: ${c.model || '?'} | ${data.started_at || ''}`;
+
+  // Color bar
+  const total = s.total || 1;
+  document.getElementById('color-bar').innerHTML =
+    `<div class="segment pass-seg" style="width:${(s.pass||0)/total*100}%"></div>` +
+    `<div class="segment partial-seg" style="width:${(s.partial||0)/total*100}%"></div>` +
+    `<div class="segment fail-seg" style="width:${(s.fail||0)/total*100}%"></div>` +
+    `<div class="segment error-seg" style="width:${(s.error||0)/total*100}%"></div>`;
+
+  // Stats
+  document.getElementById('stats-grid').innerHTML = [
+    card('pass', s.pass, 'Passed'),
+    card('partial', s.partial, 'Partial'),
+    card('fail', s.fail, 'Failed'),
+    card('', s.error, 'Errors'),
+    card('', s.avg_answer_score?.toFixed(1), 'Avg Answer'),
+    card('', s.avg_source_score?.toFixed(1), 'Avg Source'),
+    card('', s.avg_iterations?.toFixed(1), 'Avg Iters'),
+    card('', formatDuration(s.total_duration_sec), 'Total Time'),
+  ].join('');
+
+  // Difficulty table
+  const diffBody = document.querySelector('#diff-table tbody');
+  diffBody.innerHTML = '';
+  for (const diff of ['easy', 'medium', 'hard']) {
+    const d = (s.by_difficulty || {})[diff] || {};
+    const tr = document.createElement('tr');
+    const rate = d.total ? ((d.pass / d.total) * 100).toFixed(0) + '%' : '-';
+    tr.innerHTML = `<td>${capitalize(diff)}</td><td>${d.total||0}</td><td>${d.pass||0}</td><td>${d.partial||0}</td><td>${d.fail||0}</td><td>${rate}</td><td>${d.avg_score||0}</td>`;
+    diffBody.appendChild(tr);
+  }
+
+  renderTable();
+
+  // Filters
+  document.getElementById('filter-difficulty').addEventListener('change', renderTable);
+  document.getElementById('filter-verdict').addEventListener('change', renderTable);
+  document.getElementById('filter-search').addEventListener('input', renderTable);
+
+  // Sort
+  document.querySelectorAll('#results-table th[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      if (sortKey === key) sortAsc = !sortAsc;
+      else { sortKey = key; sortAsc = true; }
+      renderTable();
+    });
+  });
+
+  // Export
+  document.getElementById('export-btn').addEventListener('click', exportMarkdown);
+}
+
+function renderTable() {
+  const diffFilter = document.getElementById('filter-difficulty').value;
+  const verdictFilter = document.getElementById('filter-verdict').value;
+  const search = document.getElementById('filter-search').value.toLowerCase();
+
+  let rows = (data.results || []).map(r => ({
+    ...r,
+    verdict: r.error ? 'error' : (r.evaluation?.verdict || 'none'),
+    answer_score: r.evaluation?.answer_score ?? -1,
+    source_score: r.evaluation?.source_score ?? -1,
+    iterations: r.agent_iterations ?? 0,
+    duration: r.duration_sec ?? 0,
+  }));
+
+  // Filter
+  if (diffFilter) rows = rows.filter(r => r.difficulty === diffFilter);
+  if (verdictFilter) rows = rows.filter(r => r.verdict === verdictFilter);
+  if (search) rows = rows.filter(r =>
+    r.question.toLowerCase().includes(search) ||
+    (r.agent_answer || '').toLowerCase().includes(search) ||
+    r.id.toLowerCase().includes(search)
+  );
+
+  // Sort
+  rows.sort((a, b) => {
+    let va = a[sortKey], vb = b[sortKey];
+    if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb||'').toLowerCase(); }
+    if (va < vb) return sortAsc ? -1 : 1;
+    if (va > vb) return sortAsc ? 1 : -1;
+    return 0;
+  });
+
+  const body = document.getElementById('results-body');
+  body.innerHTML = '';
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    if (r.id === selectedId) tr.classList.add('selected');
+    tr.innerHTML = `
+      <td>${r.id}</td>
+      <td>${capitalize(r.difficulty)}</td>
+      <td class="q-text" title="${escHtml(r.question)}">${escHtml(r.question)}</td>
+      <td><span class="verdict-badge verdict-${r.verdict}">${r.verdict}</span></td>
+      <td>${r.answer_score >= 0 ? r.answer_score : '-'}</td>
+      <td>${r.source_score >= 0 ? r.source_score : '-'}</td>
+      <td>${r.iterations || '-'}</td>
+      <td>${r.duration ? r.duration.toFixed(1) + 's' : '-'}</td>
+    `;
+    tr.addEventListener('click', () => showDetail(r.id));
+    body.appendChild(tr);
+  }
+
+  // Update sort arrows
+  document.querySelectorAll('#results-table th[data-sort]').forEach(th => {
+    const arrow = th.querySelector('.sort-arrow');
+    arrow.textContent = th.dataset.sort === sortKey ? (sortAsc ? '\u25B2' : '\u25BC') : '';
+  });
+}
+
+function showDetail(id) {
+  selectedId = id;
+  const r = data.results.find(r => r.id === id);
+  if (!r) return;
+  renderTable();
+
+  const panel = document.getElementById('detail-panel');
+  panel.style.display = 'block';
+  document.getElementById('detail-title').textContent = `${r.id} — ${r.question}`;
+
+  const verdict = r.error ? 'error' : (r.evaluation?.verdict || 'none');
+  const ev = r.evaluation || {};
+
+  let html = '';
+
+  // Verdict + scores
+  html += `<div class="detail-section">
+    <span class="verdict-badge verdict-${verdict}" style="font-size:0.9rem;padding:4px 16px">${verdict.toUpperCase()}</span>
+    ${ev.answer_score != null ? `&nbsp; Answer: <strong>${ev.answer_score}</strong>/100 &nbsp; Source: <strong>${ev.source_score}</strong>/100` : ''}
+    ${r.error ? `<p style="color:var(--fail);margin-top:8px">${escHtml(r.error)}</p>` : ''}
+  </div>`;
+
+  // Side-by-side answers
+  html += `<div class="detail-section">
+    <h3>Answers</h3>
+    <div class="side-by-side">
+      <div><div class="label-tag">Expected</div><br>${escHtml(r.expected_answer)}</div>
+      <div><div class="label-tag">Agent</div><br>${escHtml(r.agent_answer || '(no answer)')}</div>
+    </div>
+  </div>`;
+
+  // Evaluation reasoning
+  if (ev.answer_reasoning) {
+    html += `<div class="detail-section">
+      <h3>Evaluation Reasoning</h3>
+      <p style="font-size:0.85rem">${escHtml(ev.answer_reasoning)}</p>
+      ${ev.source_reasoning ? `<p style="font-size:0.85rem;margin-top:8px;color:var(--text-dim)">${escHtml(ev.source_reasoning)}</p>` : ''}
+    </div>`;
+  }
+
+  // Missing / hallucinated facts
+  if ((ev.missing_facts?.length) || (ev.hallucinated_facts?.length)) {
+    html += `<div class="detail-section"><h3>Fact Analysis</h3><ul class="fact-list">`;
+    for (const f of (ev.missing_facts || [])) html += `<li class="fact-missing">Missing: ${escHtml(f)}</li>`;
+    for (const f of (ev.hallucinated_facts || [])) html += `<li class="fact-hallucinated">Hallucinated: ${escHtml(f)}</li>`;
+    html += `</ul></div>`;
+  }
+
+  // Source coverage
+  html += `<div class="detail-section"><h3>Source Coverage</h3><table class="source-table"><thead><tr><th>Source</th><th>Status</th></tr></thead><tbody>`;
+  for (const s of (ev.found_sources || [])) html += `<tr><td>${escHtml(s)}</td><td class="source-found">Found</td></tr>`;
+  for (const s of (ev.missed_sources || [])) html += `<tr><td>${escHtml(s)}</td><td class="source-missed">Missed</td></tr>`;
+  for (const s of (ev.extra_sources || [])) html += `<tr><td>${escHtml(s)}</td><td class="source-extra">Extra</td></tr>`;
+  html += `</tbody></table></div>`;
+
+  // Trace timeline
+  const trace = r.trace;
+  if (trace && trace.iterations?.length) {
+    html += `<div class="detail-section"><h3>Agent Trace (${trace.total_llm_calls} LLM calls, ${trace.total_tool_calls} tool calls, ${trace.total_duration_sec?.toFixed(1)}s)</h3>`;
+    html += `<div class="trace-timeline">`;
+    for (const it of trace.iterations) {
+      const itId = `trace-${r.id}-${it.iteration}`;
+      const toolCount = it.tool_calls?.length || 0;
+      const label = it.is_final ? 'Final Answer' : `${toolCount} tool call${toolCount !== 1 ? 's' : ''}`;
+      html += `<div class="trace-iter" id="${itId}">
+        <div class="trace-iter-header" onclick="toggleIter('${itId}')">
+          <span>Iteration ${it.iteration} — ${label}</span>
+          <span>${it.duration_sec?.toFixed(1)}s</span>
+        </div>
+        <div class="trace-iter-body">`;
+      if (it.assistant_content) {
+        html += `<div class="trace-assistant">${escHtml(it.assistant_content)}</div>`;
+      }
+      for (const tc of (it.tool_calls || [])) {
+        const tcResultId = `${itId}-${tc.name}-${Math.random().toString(36).slice(2, 8)}`;
+        html += `<div class="trace-tool">
+          <div class="trace-tool-header"><span>${tc.name}</span><span>${tc.duration_sec?.toFixed(2)}s · ${tc.result_length} chars · ${tc.citations_produced} cit.</span></div>
+          <div class="trace-tool-args">${escHtml(JSON.stringify(tc.arguments))}</div>
+          ${tc.error ? `<div class="trace-tool-error">${escHtml(tc.error)}</div>` : ''}
+          <div class="trace-tool-result" id="${tcResultId}" onclick="toggleResult('${tcResultId}')">${escHtml(tc.result_preview || '')}</div>
+        </div>`;
+      }
+      html += `</div></div>`;
+    }
+    html += `</div></div>`;
+  }
+
+  document.getElementById('detail-content').innerHTML = html;
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeDetail() {
+  selectedId = null;
+  document.getElementById('detail-panel').style.display = 'none';
+  renderTable();
+}
+
+function toggleIter(id) {
+  document.getElementById(id).classList.toggle('open');
+}
+
+function toggleResult(id) {
+  document.getElementById(id).classList.toggle('expanded');
+}
+
+function exportMarkdown() {
+  if (!data?.summary) return;
+  const s = data.summary;
+  const bd = s.by_difficulty || {};
+  let md = `## Benchmark Results\n\n`;
+  md += `| Metric | Value |\n|--------|-------|\n`;
+  md += `| Total | ${s.total} |\n| Pass | ${s.pass} |\n| Partial | ${s.partial} |\n| Fail | ${s.fail} |\n| Error | ${s.error} |\n`;
+  md += `| Pass Rate | ${s.pass_rate_pct}% |\n| Pass+Partial | ${s.pass_partial_rate_pct}% |\n`;
+  md += `| Avg Answer Score | ${s.avg_answer_score} |\n| Avg Source Score | ${s.avg_source_score} |\n\n`;
+  md += `### By Difficulty\n\n| Difficulty | Pass | Total | Avg Score |\n|-----------|------|-------|-----------|\n`;
+  for (const d of ['easy', 'medium', 'hard']) {
+    const dd = bd[d] || {};
+    md += `| ${capitalize(d)} | ${dd.pass||0} | ${dd.total||0} | ${dd.avg_score||0} |\n`;
+  }
+  navigator.clipboard.writeText(md).then(() => {
+    const btn = document.getElementById('export-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy Summary as Markdown', 2000);
+  });
+}
+
+// Helpers
+function card(cls, value, label) {
+  return `<div class="stat-card ${cls}"><div class="value">${value ?? 0}</div><div class="label">${label}</div></div>`;
+}
+function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+function formatDuration(sec) {
+  if (!sec) return '0s';
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return m ? `${m}m ${s}s` : `${s}s`;
+}
+function escHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>
