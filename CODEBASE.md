@@ -155,6 +155,21 @@ tenex/
 │           └── layout/
 │               └── TopBar.tsx       # Top bar: Knowledge/Chat tabs + user avatar + theme toggle + logout
 │
+├── benchmark/
+│   ├── run_benchmark.ps1            # Launcher script (activates venv, sets PYTHONPATH, forwards args)
+│   ├── run.py                       # CLI entry point — loads questions, resolves auth, runs benchmark
+│   ├── config.py                    # BenchmarkConfig dataclass + CLI argument parsing
+│   ├── runner.py                    # TracingFolderAgent + orchestration (concurrency, retries, incremental save)
+│   ├── evaluator.py                 # LLM-as-judge evaluator (OpenAI function calling)
+│   ├── models.py                    # Dataclasses: ToolCallTrace, IterationTrace, AgentTrace, Evaluation, QuestionResult, BenchmarkResults
+│   ├── auth.py                      # DB-based Google OAuth token retrieval for benchmark runs
+│   ├── qa_test.json                 # Test questions: 17 Q&A pairs (5 easy, 5 medium, 7 hard) for a demo company
+│   ├── build_viewer.py              # Scans results/*.json → generates results_manifest.js for viewer
+│   ├── viewer.html                  # Self-contained dark-mode dashboard for viewing benchmark results
+│   ├── results_manifest.js          # Auto-generated JS file embedding all result runs (consumed by viewer.html)
+│   ├── results/                     # Timestamped JSON result files (one per run)
+│   └── PRD.md                       # Benchmark product requirements document
+│
 └── claude_docs/
     ├── 001_agentic_gdrive_chat.md   # Product requirements document
     └── 002_styling_guide.md         # Color palette, typography, component styles
@@ -591,6 +606,85 @@ Entrypoint: `alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 
 - **Backend**: `pytest` with `asyncio_mode=auto`. Tests in `backend/tests/` mirroring `backend/app/` structure. `conftest.py` provides `test_client` (authenticated, overrides `get_current_user`) and `unauthed_client` fixtures using ASGITransport (no network). Mock user has fixed UUID `00000000-0000-0000-0000-000000000001`.
 - **Frontend**: Vitest 2.1 with jsdom. `@testing-library/react` + `@testing-library/jest-dom`. Config in `vitest.config.ts` (globals: true). Tests co-located in `__tests__/` next to source.
 - **Rule**: Every feature change must include corresponding test changes (enforced by stop hook).
+
+---
+
+## Benchmark System
+
+End-to-end evaluation harness that tests the FolderAgent against a curated Q&A set and scores answers with an LLM judge. Lives entirely in `benchmark/`.
+
+### How to Run
+
+```bash
+# From project root (PowerShell)
+.\benchmark\run_benchmark.ps1 --folder-url "<Drive URL>"
+
+# Or directly (with venv active and PYTHONPATH=backend)
+python benchmark/run.py --folder-url "<Drive URL>"
+```
+
+**Key CLI flags**: `--questions E1 M3 H2` (run specific IDs), `--difficulty easy|medium|hard`, `--concurrency 3`, `--model gpt-5.2`, `--evaluator-model gpt-5.2`, `--max-iterations 15`, `--access-token <raw token>`, `--user-email <email>`, `--resume <results.json>`, `--fresh`.
+
+### Architecture
+
+```
+run.py (CLI entry point)
+  ├── auth.py          → resolve Google access token (raw CLI arg or DB lookup + refresh)
+  ├── config.py        → BenchmarkConfig dataclass + argparse
+  └── runner.py        → orchestration
+        ├── TracingFolderAgent  → subclass of FolderAgent that captures per-iteration traces
+        ├── run_agent_traced()  → creates fresh agent, runs question with timeout
+        ├── run_single()        → agent + evaluator for one question, with retry (exponential backoff)
+        ├── run_benchmark()     → concurrent execution via asyncio.Semaphore, incremental JSON save
+        └── evaluator.py        → LLM-as-judge via OpenAI Responses API function calling
+```
+
+### TracingFolderAgent (`runner.py`)
+
+Subclass of `FolderAgent` that re-implements `answer()` to capture timing and tool call details at each iteration. Produces an `AgentTrace` containing `IterationTrace` records (each with `ToolCallTrace` entries). On max-iteration hit, forces a synthesis LLM call (no tools) to get a best-effort final answer.
+
+### Evaluator (`evaluator.py`)
+
+LLM-as-judge using OpenAI Responses API with forced function calling (`submit_evaluation`). The evaluator:
+1. Pre-matches expected vs actual sources via fuzzy basename matching
+2. Sends a structured prompt with question, expected answer, agent answer, and source analysis
+3. Returns an `Evaluation`: verdict (`pass`/`partial`/`fail`), answer_score (0-100), source_score (0-100), missing/hallucinated facts, source coverage details
+
+Scoring thresholds: 90+ = pass, 60-89 = partial, <60 = fail.
+
+### Data Models (`models.py`)
+
+| Dataclass | Purpose |
+|-----------|---------|
+| `ToolCallTrace` | Single tool invocation: name, args, result preview (2000 chars), duration, citations produced |
+| `IterationTrace` | One agent iteration: LLM response + tool calls + timing |
+| `AgentTrace` | Full agent run: all iterations, total duration, LLM/tool call counts, hit_limit flag |
+| `Evaluation` | LLM judge output: verdict, scores, reasoning, fact analysis, source coverage |
+| `QuestionResult` | Complete result for one question: agent output + trace + evaluation + error |
+| `BenchmarkResults` | Full run container: config, summary stats, list of QuestionResults. Supports resume via `completed_ids` |
+
+All dataclasses have `to_dict()` / `from_dict()` for JSON serialization.
+
+### QA Test Set (`qa_test.json`)
+
+17 questions for a fictional company (Meridian Capital Advisors) across 3 difficulty levels:
+- **Easy (5)**: Single-file lookups — 401(k) policy, expense thresholds, CEO info, brand colors, VPN setup
+- **Medium (5)**: Multi-fact retrieval — P&L vs budget, deal pipeline status, restructuring scenarios, comp bands, compliance deadlines
+- **Hard (7)**: Cross-document synthesis — month-over-month P&L comparison, full engagement status, weighted pipeline analysis, debt breakdown, marketing content audit, vendor spend, engagement financials
+
+Each question has: `id`, `difficulty`, `persona`, `department`, `question`, `expected_answer`, `sources` (expected file paths).
+
+### Results Viewer
+
+- `viewer.html`: Self-contained dark-mode dashboard (no build step). Shows run list, summary stats, per-question details with expandable agent traces and evaluation breakdowns.
+- `build_viewer.py`: Scans `results/*.json` → generates `results_manifest.js` (embeds all runs as `window.__BENCHMARK_RUNS__`). Viewer loads this on page open, or accepts manual JSON upload.
+- Results are saved incrementally during a run (atomic writes via `tempfile` + `os.replace`).
+
+### Auth (`auth.py`)
+
+Two modes for obtaining a Google access token:
+1. **CLI flag**: `--access-token <raw token>` bypasses DB entirely
+2. **DB lookup** (default): Connects to PostgreSQL, finds user by `--user-email` (or first user), calls the app's `get_valid_access_token()` to refresh if expired, commits the refreshed token back to DB
 
 ---
 

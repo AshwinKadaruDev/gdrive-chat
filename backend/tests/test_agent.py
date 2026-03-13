@@ -106,9 +106,9 @@ class TestAnswerNonStreaming:
         assert "Revenue grew 15%" in result.content
 
     async def test_max_iterations_fallback_includes_citations(self):
-        """When max iterations is reached, the response should still include citations."""
+        """When max iterations is reached, synthesis is called and citations are preserved."""
         llm = AsyncMock()
-        # Always return tool calls — never a final answer
+        # Iterations 1-2: always return tool calls — never a final answer
         tool_response = _make_llm_response(
             content="Thinking...",
             tool_calls=[
@@ -121,7 +121,11 @@ class TestAnswerNonStreaming:
                 )
             ],
         )
-        llm.call_with_tools = AsyncMock(return_value=tool_response)
+        # Synthesis call: returns text, no tools
+        synthesis_response = _make_llm_response(content="Here is my synthesized answer.")
+        llm.call_with_tools = AsyncMock(
+            side_effect=[tool_response, tool_response, synthesis_response]
+        )
 
         agent = _make_agent(llm, max_iterations=2)
 
@@ -137,6 +141,7 @@ class TestAnswerNonStreaming:
         assert result.hit_limit
         assert result.iterations == 2
         assert len(result.citations) == 2  # one per iteration
+        assert "synthesized answer" in result.content
 
     async def test_llm_error_returns_graceful_response(self):
         """When the LLM call raises, agent returns a graceful error message."""
@@ -233,27 +238,40 @@ class TestAnswerStreaming:
         assert any("went wrong" in str(d) for d in delta_texts)
 
     async def test_streaming_max_iterations_includes_citations(self):
-        """When streaming hits max iterations, citations should be included."""
+        """When streaming hits max iterations, synthesis is streamed and citations are included."""
         llm = AsyncMock()
 
-        async def tool_call_stream(**kwargs):
-            yield LLMStreamEvent(
-                type="response_complete",
-                response=_make_llm_response(
-                    content="Thinking...",
-                    tool_calls=[
-                        ToolCall(
-                            id="tc-1",
-                            function=FunctionCall(
-                                name="search_drive",
-                                arguments=json.dumps({"query": "test"}),
-                            ),
-                        )
-                    ],
-                ),
-            )
+        call_count = 0
 
-        llm.stream_call_with_tools = tool_call_stream
+        async def stream_dispatch(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: tool call (iteration 1)
+                yield LLMStreamEvent(
+                    type="response_complete",
+                    response=_make_llm_response(
+                        content="Thinking...",
+                        tool_calls=[
+                            ToolCall(
+                                id="tc-1",
+                                function=FunctionCall(
+                                    name="search_drive",
+                                    arguments=json.dumps({"query": "test"}),
+                                ),
+                            )
+                        ],
+                    ),
+                )
+            else:
+                # Second call: synthesis (no tools)
+                yield LLMStreamEvent(type="text_delta", text="Synthesized answer.")
+                yield LLMStreamEvent(
+                    type="response_complete",
+                    response=_make_llm_response(content="Synthesized answer."),
+                )
+
+        llm.stream_call_with_tools = stream_dispatch
 
         citation = Citation(
             chunk_id="c1", file_id="f1", file_name="doc.pdf", snippet="text"
@@ -270,3 +288,44 @@ class TestAnswerStreaming:
         citation_events = [d for t, d in events if t == "citations"]
         assert len(citation_events) == 1
         assert len(citation_events[0]) > 0  # Should not be empty
+        # Synthesis text was streamed
+        delta_texts = [d for t, d in events if t == "delta"]
+        assert any("Synthesized" in str(d) for d in delta_texts)
+
+
+class TestForcedSynthesis:
+    async def test_max_iterations_forces_synthesis(self):
+        """When all iterations produce only tool calls, the forced synthesis call
+        happens with tools=[] and produces the final answer."""
+        llm = AsyncMock()
+        # All normal iterations: tool calls only (no assistant text content)
+        tool_response = _make_llm_response(
+            content=None,
+            tool_calls=[
+                ToolCall(
+                    id="tc-1",
+                    function=FunctionCall(
+                        name="get_folder_structure",
+                        arguments=json.dumps({}),
+                    ),
+                )
+            ],
+        )
+        synthesis_response = _make_llm_response(
+            content="Based on my research, the answer is X."
+        )
+        llm.call_with_tools = AsyncMock(
+            side_effect=[tool_response, tool_response, synthesis_response]
+        )
+
+        agent = _make_agent(llm, max_iterations=2)
+
+        with patch("app.services.agent.execute_tool", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = ("folder structure...", [])
+            result = await agent.answer("Q?", "proj-1", "token-1", session_id="sess-1")
+
+        assert result.hit_limit
+        assert "Based on my research" in result.content
+        # Verify the synthesis call was made with tools=[]
+        synthesis_call = llm.call_with_tools.call_args_list[-1]
+        assert synthesis_call.kwargs.get("tools") == [] or synthesis_call[1].get("tools") == []

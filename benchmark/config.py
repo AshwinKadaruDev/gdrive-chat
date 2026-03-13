@@ -37,7 +37,7 @@ class BenchmarkConfig:
     max_retries: int = 3
     retry_base_sec: float = 5.0
     question_timeout_sec: float = 300.0
-    qa_file: str = "qa_test.json"
+    qa_file: str = "benchmark/qa_test.json"
     results_path: str = ""
     question_filter: list[str] | None = None
     difficulty_filter: str | None = None
@@ -105,7 +105,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--qa-file",
-        default="qa_test.json",
+        default="benchmark/qa_test.json",
         help="Path to the QA test JSON file",
     )
     parser.add_argument(

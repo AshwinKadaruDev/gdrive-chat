@@ -1,0 +1,136 @@
+Root Cause Analysis                                                                                                                                                                     
+                                                                                                                                                                                            1. ERROR: H2 (Titan Manufacturing) — Timed out at 300s                                                                                                                                  
+                                                                                                                                                                                            The most complex question (6 source files). The agent never finished. This is a timeout issue, not a quality issue.                                                                                                                                                                                                                                                                 2. FAIL: E5 (VPN Setup, score 55) — Hallucinations                                                                                                                                                                                                                                                                                                                                
+  The agent invented details not in the doc (VPN port 10443, "IT portal", wrong email). It also missed security requirements (MFA, 12+ char password, 5-min screen lock). This is a
+  prompting/model quality issue — the agent didn't extract precisely from the doc.
+
+  3. FAIL: M5 (Compliance, score 45) — Missed a whole source file
+
+  The agent only checked the Compliance Checklist but never opened Vendor Contracts Summary.xlsx, which has the expired ADP contract, PitchBook, and Salesforce renewals. It then
+  incorrectly said "no overdue items." This is a planning failure — the question asks about compliance broadly, and the agent didn't consider vendor contracts.
+
+  4. PARTIAL (7 questions) — Two recurring patterns:
+
+  Pattern A: Missing specific details (E2, E3, E4, M3, H7)
+  The agent gets the gist right but drops secondary facts:
+  - E2: Omitted "$25 receipt threshold"
+  - E3: Omitted "March 15, 2011" founding date, Chicago/NYC offices
+  - E4: Omitted typography (Arial Bold headings, Arial Regular 11pt body)
+  - M3: Got the 3 scenarios and recommendation right but omitted all recovery percentages and timelines
+  - H7: Got billing right but missed invoice count, payment days, NPS score, FY2025 revenue comparison
+
+  Pattern B: Didn't consult a second required source (H3, H4)
+  - H3: Found pipeline tracker but missed Win-Loss Analysis doc (needed for Monarch loss context)
+  - H4: Found Creditor Analysis spreadsheet but missed Situation Overview doc
+
+  5. Evaluator Strictness
+
+  The evaluator seems reasonably calibrated. The score thresholds are: 90+ = pass, 60-89 = partial, <60 = fail. Looking at the scoring:
+  - E2 at 86 (missing one fact) = partial seems fair
+  - E4 at 82 (missing typography) = partial seems fair
+  - M3 at 78 (missing all numbers) = partial seems fair
+  - E5 at 55 (hallucinations) = fail is correct
+
+  One questionable area: E4's "hallucinated facts" (CMYK values, logo rules) are actually in the source document — the evaluator is flagging them because they're not in the expected     
+  answer. But this doesn't affect the verdict.
+
+  Summary of Fixes Needed
+
+  ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┬─────────────────┐   
+  │                                                                               Fix                                                                               │   Would help    │   
+  ├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────┤   
+  │ Increase timeout (H2 needs >300s for 6 files)                                                                                                                   │ H2              │   
+  ├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────┤   
+  │ Stronger detail extraction — prompt the agent to extract ALL specifics, not just the headline answer                                                            │ E2, E3, E4, M3, │   
+  │                                                                                                                                                                 │  H7             │   
+  ├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────┤   
+  │ Better multi-source planning — when a question spans multiple topics (compliance + vendor contracts), the agent needs to identify ALL relevant files from the   │ M5, H3, H4      │   
+  │ folder structure before diving in                                                                                                                               │                 │   
+  ├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────┤   
+  │ Anti-hallucination — E5 invented facts. The rule is there but the model still fabricated                                                                        │ E5              │   
+  ├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────┤   
+  │ Calculation accuracy — H3 got weighted pipeline wrong                                                                                                           │ H3              │   
+  └─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┴─────────────────┘   
+
+  The biggest bang-for-the-buck fixes are (1) stronger prompting around exhaustive detail extraction and (2) better planning to consult multiple source files. These two alone would      
+  likely flip most of the 7 partials to pass.
+
+Exact Root Causes for Every Non-Pass Question                                                                                                                                           
+                                                                                                                                                                                            ERRORS                                                                                                                                                                                  
+                                                                                                                                                                                          
+  H2 (Titan Manufacturing) — Timed out, trace is null       
+  The agent never produced even one trace iteration. The 300s timeout was hit before the first LLM call returned (or the harness discarded partial work). This question requires 6 source
+  files — the LLM likely produced a huge first response planning its approach. Fix: increase timeout, or the runner needs to capture partial traces.
+
+  ---
+  FAILs
+
+  E5 (VPN Setup, score 55) — Agent SAW the data but didn't extract it
+  The IT Setup Guide.pdf returned 2,973 chars. The trace preview truncates at 2,000 chars (runner.py caps result_preview), but the agent received the full content including Section 5:   
+  Security Requirements with MFA, 12+ char password, and 5-min screen lock. The agent read the right file, saw the right data, and chose not to include it — it focused on the VPN steps  
+  (Section 3) and only mentioned MFA in passing ("you may also be prompted for MFA"). It also hallucinated port 10443 — that is actually in the doc, so the evaluator mis-flagged it. But 
+  the ithelpdesk email appears to come from the New Hire Checklist (a second file the agent read unnecessarily). Root cause: LLM synthesis failure — incomplete extraction from a doc it  
+  fully read.
+
+  M5 (Compliance, score 45) — Never opened the second required file
+  The agent read the Regulatory Compliance Checklist (correct) but never opened Vendor Contracts Summary.xlsx even though it was visible in the folder tree. The question asks about      
+  "compliance items" broadly — vendor contract expirations are part of compliance. Additionally, even from the checklist it DID read, it omitted BCP (Not Started, due 09/30) and SOC 2   
+  Readiness (Not Started, due 08/31), apparently judging them as not "due soon." Root causes: (1) Planning failure — didn't identify second source file; (2) Synthesis failure — omitted  
+  relevant items from data it had.
+
+  ---
+  PARTIALs — The Pattern
+
+  Every single partial shares the same root cause: the agent retrieved the right file, the missing facts were clearly in the tool results, but the LLM didn't include them in the answer. 
+
+  ┌─────┬────────────────────────────────────────────────┬─────────────────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────┐    
+  │  Q  │                  Missing Fact                  │                In Tool Results?                 │                               Why Omitted                               │    
+  ├─────┼────────────────────────────────────────────────┼─────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤    
+  │ E2  │ "$25 receipt requirement"                      │ YES — Section 5 of Expense Policy               │ Agent scoped answer to just approval thresholds                         │    
+  ├─────┼────────────────────────────────────────────────┼─────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤    
+  │ E3  │ "Managing Partner", "March 15, 2011",          │ YES — Org Chart row 5 showed all three          │ Agent wrote a 2-line answer ("CEO" + "2011") despite reading 6 files    │    
+  │     │ Chicago/NYC                                    │                                                 │                                                                         │    
+  ├─────┼────────────────────────────────────────────────┼─────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤    
+  │ E4  │ Arial Bold headings, Arial Regular 11pt        │ YES — Section 3 Typography in Brand Guidelines  │ Agent interpreted "brand colors" narrowly, excluded typography          │    
+  ├─────┼────────────────────────────────────────────────┼─────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤    
+  │ M3  │ Recovery % and timelines for all 3 scenarios   │ YES — Restructuring Options Memo (4,942 chars)  │ Agent gave qualitative descriptions, skipped numbers                    │    
+  ├─────┼────────────────────────────────────────────────┼─────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤    
+  │ H3  │ Unweighted total $15.4M, Pinnacle as           │ Partially — Win-Loss doc not found via          │ search_drive for "Monarch" didn't surface Win-Loss Analysis; agent      │    
+  │     │ next-closest, Win-Loss doc                     │ search_drive                                    │ didn't browse folder                                                    │    
+  ├─────┼────────────────────────────────────────────────┼─────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤    
+  │ H4  │ Goldman as largest single creditor, Situation  │ YES for data, NO for framing — never read       │ Agent went straight to spreadsheet, never opened the companion .docx    │    
+  │     │ Overview context                               │ Situation Overview doc                          │                                                                         │    
+  ├─────┼────────────────────────────────────────────────┼─────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤    
+  │ H7  │ Invoice count, avg payment days, NPS 9/10,     │ YES for most — but FY2025 Budget returned 0     │ Budget spreadsheet was unreadable (openpyxl returned empty); agent also │    
+  │     │ FY2025 comparison                              │ rows                                            │  omitted details it DID have                                            │    
+  └─────┴────────────────────────────────────────────────┴─────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────┘    
+
+  ---
+  Two Distinct Problem Categories
+
+  Category 1: LLM Synthesis/Completeness (E2, E3, E4, E5, M3, M5-partial, H7-partial)
+  The agent finds and reads the right docs. The data is in the tool results. The LLM just doesn't include it all. It tends to:
+  - Answer the "headline" and skip supporting details
+  - Scope narrowly to the exact words in the question (E4: "brand colors" → skips typography)
+  - Produce terse answers when the question seems simple (E3: 2-line answer for an "easy" question)
+  - Skip numbers/percentages in favor of qualitative descriptions (M3)
+
+  Category 2: Planning/Retrieval (M5, H3, H4, H7-partial)
+  The agent doesn't consult all required source files:
+  - M5: Never opened Vendor Contracts Summary (adjacent but not obviously "compliance")
+  - H3: search_drive for "Monarch" didn't surface Win-Loss Analysis; agent didn't just browse the folder
+  - H4: Never opened Situation Overview doc alongside the spreadsheet
+  - H7: FY2025 Budget spreadsheet is genuinely broken — openpyxl returns 0 rows/0 cols for a 23KB Google Sheets file exported to xlsx. This is a tool bug.
+
+  The FY2025 Budget Bug
+
+  This is a real infrastructure issue. The _handle_get_spreadsheet_overview uses openpyxl.load_workbook(data_only=True) which reads cached cell values. Google Sheets exported to xlsx via
+   the Drive API may have no cached values if the spreadsheet uses formulas — openpyxl sees empty cells. This would also explain why H3's "Weighted Value" column was empty in the        
+  pipeline tracker (formula cells with no cached values). This bug silently makes some spreadsheets unreadable.
+
+  Evaluator Strictness
+
+  The evaluator is actually slightly too strict in a few places:
+  - E4: Flagged CMYK values and logo rules as "hallucinated" when they're in the source doc — the evaluator compares against expected answer only, not source docs
+  - H4: Flagged "Municipal Bond Authority" as hallucinated when it's literally in row 14 of the spreadsheet
+  - But the score thresholds (90+ pass, 60-89 partial, <60 fail) seem reasonable. The scores themselves are fair given what's missing.

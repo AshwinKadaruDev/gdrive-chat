@@ -56,7 +56,18 @@ structure (e.g. you need to search inside file content, not file names).
 4. If you cannot find the answer after thorough searching, use report_inability.
 5. If the question is ambiguous, use request_clarification.
 6. Be precise and quote relevant text when appropriate.
-7. If you find partial information, say so explicitly rather than making up the rest.
+7. NEVER invent or assume facts not explicitly stated in the documents you read. \
+If a number, date, or detail is not in the source, do not guess — say the \
+information was not found.
+8. You have a limited number of tool-calling steps. Before reading files, plan \
+which documents you need. For multi-part questions, identify ALL relevant files upfront.
+9. After reading 2-3 files, pause and consider: do you have enough to answer? \
+If yes, synthesize now. It is far better to give a thorough answer from what you \
+have than to keep searching and run out of steps.
+10. Extract and include specific numbers, dates, percentages, dollar amounts, and \
+names. Do not just summarize at a high level.
+11. For questions with multiple parts, verify you have addressed every part before \
+giving your final answer.
 
 RESPONSE FORMAT:
 - Write in clear Markdown. Use headings, bullets, or tables only when they help \
@@ -249,23 +260,42 @@ class FolderAgent:
                     }
                 )
 
-        # Reached max iterations without a final answer
+        # Reached max iterations — force a synthesis call
         logger.warning(
-            "Agent hit max iterations (%d) without final answer.",
+            "Agent hit max iterations (%d) without final answer. Forcing synthesis.",
             self.max_iterations,
         )
-        last_content = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "assistant" and msg.get("content"):
-                last_content = msg["content"]
-                break
+        messages.append({
+            "role": "user",
+            "content": (
+                "You have reached the maximum number of steps. Based on everything "
+                "you have read so far, provide your best answer now. Synthesize all "
+                "the information you have gathered. Do not call any more tools."
+            ),
+        })
+        final_content = ""
+        try:
+            response = await self.llm_client.call_with_tools(
+                messages=messages, tools=[], model=self.model,
+            )
+            final_content = response.choices[0].message.content or ""
+        except Exception:
+            logger.exception("Synthesis call failed after max iterations")
+
+        # Fall back to last assistant content if synthesis failed
+        if not final_content:
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant" and msg.get("content"):
+                    final_content = msg["content"]
+                    break
+
         warning = (
             "\n\n**Note:** I reached my maximum number of reasoning steps. "
             "The answer above may be incomplete. Please try rephrasing your "
             "question or breaking it into smaller parts."
         )
         return AgentResponse(
-            content=(last_content + warning) if last_content else (
+            content=(final_content + warning) if final_content else (
                 "I was unable to formulate a complete answer within the allowed "
                 "number of reasoning steps. Please try rephrasing your question."
             ),
@@ -459,8 +489,37 @@ class FolderAgent:
                     "content": result_str,
                 })
 
-        # Hit max iterations — still emit accumulated citations
-        yield ("delta", "I reached my maximum number of reasoning steps. The answer may be incomplete.")
+        # Hit max iterations — force a synthesis call
+        logger.warning("Agent (streaming) hit max iterations (%d). Forcing synthesis.", self.max_iterations)
+        messages.append({
+            "role": "user",
+            "content": (
+                "You have reached the maximum number of steps. Based on everything "
+                "you have read so far, provide your best answer now. Synthesize all "
+                "the information you have gathered. Do not call any more tools."
+            ),
+        })
+        synthesis_content = ""
+        try:
+            async for event in self.llm_client.stream_call_with_tools(
+                messages=messages, tools=[], model=self.model,
+            ):
+                if event.type == "text_delta" and event.text:
+                    synthesis_content += event.text
+                    yield ("delta", event.text)
+                elif event.type == "response_complete":
+                    pass  # streaming already emitted deltas
+        except Exception:
+            logger.exception("Synthesis streaming call failed after max iterations")
+
+        # If synthesis produced nothing, fall back to last assistant content
+        if not synthesis_content:
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant" and msg.get("content"):
+                    yield ("delta", msg["content"])
+                    break
+
+        yield ("delta", "\n\n**Note:** I reached my maximum number of reasoning steps. The answer above may be incomplete.")
         seen_max: set[tuple[str, str | None]] = set()
         unique_max: list[Citation] = []
         for c in all_citations:

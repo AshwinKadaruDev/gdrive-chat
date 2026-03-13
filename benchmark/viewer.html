@@ -30,7 +30,128 @@
   h2 { font-size: 1.1rem; margin-bottom: 12px; color: var(--text-dim); }
   h3 { font-size: 1rem; margin-bottom: 8px; }
 
-  /* Drop zone */
+  /* ===== RUN LIST (landing page) ===== */
+  #run-list-view {}
+  .run-list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+  }
+  .run-list-header h1 { margin-bottom: 0; }
+  .upload-btn {
+    padding: 8px 16px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .upload-btn:hover { border-color: var(--accent); color: var(--text); }
+  #manual-file-input { display: none; }
+
+  .empty-state {
+    text-align: center;
+    padding: 80px 20px;
+    color: var(--text-dim);
+  }
+  .empty-state p { margin-bottom: 16px; }
+  .empty-state code {
+    display: inline-block;
+    background: var(--surface);
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    color: var(--accent);
+  }
+
+  .run-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
+  }
+  .run-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    cursor: pointer;
+    transition: border-color 0.2s, transform 0.15s;
+  }
+  .run-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+  }
+  .run-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 12px;
+  }
+  .run-card-date { font-size: 1.05rem; font-weight: 600; }
+  .run-card-time { font-size: 0.8rem; color: var(--text-dim); margin-top: 2px; }
+  .run-card-model {
+    font-size: 0.75rem;
+    padding: 3px 10px;
+    background: var(--surface2);
+    border-radius: 12px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .run-card-bar {
+    display: flex;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .run-card-bar .segment { transition: width 0.3s; }
+  .run-card-bar .pass-seg { background: var(--pass); }
+  .run-card-bar .partial-seg { background: var(--partial); }
+  .run-card-bar .fail-seg { background: var(--fail); }
+  .run-card-bar .error-seg { background: var(--error); }
+  .run-card-stats {
+    display: flex;
+    gap: 16px;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  .run-card-stats span { display: flex; align-items: center; gap: 4px; }
+  .run-card-stats .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .run-card-stats .dot-pass { background: var(--pass); }
+  .run-card-stats .dot-partial { background: var(--partial); }
+  .run-card-stats .dot-fail { background: var(--fail); }
+  .run-card-bottom {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+  }
+
+  /* ===== BACK BUTTON ===== */
+  .back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    margin-bottom: 16px;
+  }
+  .back-btn:hover { border-color: var(--accent); color: var(--text); }
+
+  /* ===== DROP ZONE (fallback) ===== */
   #drop-zone {
     border: 2px dashed var(--border);
     border-radius: 12px;
@@ -58,7 +179,7 @@
   }
   #file-input { display: none; }
 
-  /* Dashboard */
+  /* ===== DASHBOARD ===== */
   #dashboard { display: none; }
   .stats-grid {
     display: grid;
@@ -325,22 +446,28 @@
   @media (max-width: 768px) {
     .side-by-side { grid-template-columns: 1fr; }
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .run-grid { grid-template-columns: 1fr; }
   }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>Benchmark Results Viewer</h1>
 
-  <!-- Drop zone -->
-  <div id="drop-zone">
-    <p>Drop a benchmark results JSON file here</p>
-    <button class="btn" onclick="document.getElementById('file-input').click()">Choose File</button>
-    <input type="file" id="file-input" accept=".json">
+  <!-- ===== VIEW 1: Run List ===== -->
+  <div id="run-list-view">
+    <div class="run-list-header">
+      <h1>Benchmark Runs</h1>
+      <div>
+        <button class="upload-btn" onclick="document.getElementById('manual-file-input').click()">Upload JSON</button>
+        <input type="file" id="manual-file-input" accept=".json">
+      </div>
+    </div>
+    <div id="run-list-content"></div>
   </div>
 
-  <!-- Dashboard (hidden until file loaded) -->
-  <div id="dashboard">
+  <!-- ===== VIEW 2: Single Run Dashboard ===== -->
+  <div id="dashboard" style="display:none">
+    <button class="back-btn" onclick="showRunList()">&#8592; All Runs</button>
     <h2 id="run-info"></h2>
 
     <!-- Color bar -->
@@ -391,48 +518,148 @@
   </div>
 </div>
 
+<!-- Load pre-built manifest (generated by build_viewer.py) -->
+<script src="results_manifest.js"></script>
+
 <script>
-let data = null;
+// ===== State =====
+let allRuns = [];   // array of full run objects
+let data = null;    // currently viewed run
 let sortKey = 'id';
 let sortAsc = true;
 let selectedId = null;
+let filtersAttached = false;
 
-// File loading
-const dropZone = document.getElementById('drop-zone');
-const fileInput = document.getElementById('file-input');
+// ===== Init =====
+(function init() {
+  // Load runs from manifest (built by build_viewer.py)
+  if (window.__BENCHMARK_RUNS__ && window.__BENCHMARK_RUNS__.length) {
+    allRuns = window.__BENCHMARK_RUNS__;
+  }
 
-dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-dropZone.addEventListener('drop', e => {
-  e.preventDefault();
-  dropZone.classList.remove('dragover');
-  if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
-});
-fileInput.addEventListener('change', () => { if (fileInput.files.length) loadFile(fileInput.files[0]); });
-
-function loadFile(file) {
-  const reader = new FileReader();
-  reader.onload = e => {
-    try {
-      data = JSON.parse(e.target.result);
-      render();
-    } catch (err) {
-      alert('Invalid JSON file: ' + err.message);
+  // Manual file upload (always available as fallback)
+  document.getElementById('manual-file-input').addEventListener('change', function() {
+    if (this.files.length) {
+      const reader = new FileReader();
+      reader.onload = e => {
+        try {
+          const run = JSON.parse(e.target.result);
+          openRun(run);
+        } catch (err) {
+          alert('Invalid JSON file: ' + err.message);
+        }
+      };
+      reader.readAsText(this.files[0]);
     }
-  };
-  reader.readAsText(file);
+  });
+
+  renderRunList();
+})();
+
+
+// ===== View 1: Run List =====
+
+function renderRunList() {
+  const container = document.getElementById('run-list-content');
+
+  if (allRuns.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <p>No benchmark results found.</p>
+        <p>Run the build script to generate the manifest:</p>
+        <code>python benchmark/build_viewer.py</code>
+        <p style="margin-top:16px">Or use the "Upload JSON" button above to view a single result file.</p>
+      </div>`;
+    return;
+  }
+
+  // Sort newest first
+  const sorted = [...allRuns].sort((a, b) => {
+    const da = a.started_at || '';
+    const db = b.started_at || '';
+    return db.localeCompare(da);
+  });
+
+  let html = '<div class="run-grid">';
+  for (const run of sorted) {
+    const s = run.summary || {};
+    const c = run.config || {};
+    const total = s.total || 1;
+
+    const dateStr = formatDateHuman(run.started_at);
+    const timeStr = formatTimeHuman(run.started_at);
+    const durationStr = formatDuration(s.total_duration_sec);
+    const passRate = s.pass_rate_pct != null ? s.pass_rate_pct + '%' : '-';
+    const runIdx = sorted.indexOf(run);
+
+    html += `
+      <div class="run-card" onclick="openRunByIndex(${allRuns.indexOf(run)})">
+        <div class="run-card-header">
+          <div>
+            <div class="run-card-date">${dateStr}</div>
+            <div class="run-card-time">${timeStr}</div>
+          </div>
+          <span class="run-card-model">${escHtml(c.model || 'unknown')}</span>
+        </div>
+        <div class="run-card-bar">
+          <div class="segment pass-seg" style="width:${(s.pass||0)/total*100}%"></div>
+          <div class="segment partial-seg" style="width:${(s.partial||0)/total*100}%"></div>
+          <div class="segment fail-seg" style="width:${(s.fail||0)/total*100}%"></div>
+          <div class="segment error-seg" style="width:${(s.error||0)/total*100}%"></div>
+        </div>
+        <div class="run-card-stats">
+          <span><span class="dot dot-pass"></span> ${s.pass || 0} pass</span>
+          <span><span class="dot dot-partial"></span> ${s.partial || 0} partial</span>
+          <span><span class="dot dot-fail"></span> ${s.fail || 0} fail</span>
+        </div>
+        <div class="run-card-bottom">
+          <span>${s.total || 0} questions &middot; ${passRate} pass rate</span>
+          <span>${durationStr}</span>
+        </div>
+      </div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
 }
 
-function render() {
-  document.getElementById('drop-zone').style.display = 'none';
-  document.getElementById('dashboard').style.display = 'block';
+function openRunByIndex(idx) {
+  openRun(allRuns[idx]);
+}
 
+function openRun(run) {
+  data = run;
+  selectedId = null;
+  sortKey = 'id';
+  sortAsc = true;
+  document.getElementById('run-list-view').style.display = 'none';
+  document.getElementById('dashboard').style.display = 'block';
+  renderDashboard();
+}
+
+function showRunList() {
+  data = null;
+  document.getElementById('dashboard').style.display = 'none';
+  document.getElementById('run-list-view').style.display = 'block';
+  // Reset detail panel
+  document.getElementById('detail-panel').style.display = 'none';
+}
+
+
+// ===== View 2: Dashboard =====
+
+function renderDashboard() {
   const s = data.summary || {};
   const c = data.config || {};
 
-  // Run info
+  // Run info — human readable
+  const dateStr = formatDateHuman(data.started_at);
+  const timeStr = formatTimeHuman(data.started_at);
+  const endTimeStr = formatTimeHuman(data.completed_at);
   document.getElementById('run-info').textContent =
-    `Run: ${data.run_id?.slice(0, 8) || '?'} | Model: ${c.model || '?'} | ${data.started_at || ''}`;
+    `${dateStr} at ${timeStr}` +
+    (endTimeStr ? ` \u2014 ${endTimeStr}` : '') +
+    ` | Model: ${c.model || '?'}` +
+    ` | ${s.total || 0} questions`;
 
   // Color bar
   const total = s.total || 1;
@@ -465,25 +692,31 @@ function render() {
     diffBody.appendChild(tr);
   }
 
+  // Reset filters
+  document.getElementById('filter-difficulty').value = '';
+  document.getElementById('filter-verdict').value = '';
+  document.getElementById('filter-search').value = '';
+
   renderTable();
 
-  // Filters
-  document.getElementById('filter-difficulty').addEventListener('change', renderTable);
-  document.getElementById('filter-verdict').addEventListener('change', renderTable);
-  document.getElementById('filter-search').addEventListener('input', renderTable);
+  // Attach event listeners once
+  if (!filtersAttached) {
+    filtersAttached = true;
+    document.getElementById('filter-difficulty').addEventListener('change', renderTable);
+    document.getElementById('filter-verdict').addEventListener('change', renderTable);
+    document.getElementById('filter-search').addEventListener('input', renderTable);
 
-  // Sort
-  document.querySelectorAll('#results-table th[data-sort]').forEach(th => {
-    th.addEventListener('click', () => {
-      const key = th.dataset.sort;
-      if (sortKey === key) sortAsc = !sortAsc;
-      else { sortKey = key; sortAsc = true; }
-      renderTable();
+    document.querySelectorAll('#results-table th[data-sort]').forEach(th => {
+      th.addEventListener('click', () => {
+        const key = th.dataset.sort;
+        if (sortKey === key) sortAsc = !sortAsc;
+        else { sortKey = key; sortAsc = true; }
+        renderTable();
+      });
     });
-  });
 
-  // Export
-  document.getElementById('export-btn').addEventListener('click', exportMarkdown);
+    document.getElementById('export-btn').addEventListener('click', exportMarkdown);
+  }
 }
 
 function renderTable() {
@@ -552,7 +785,7 @@ function showDetail(id) {
 
   const panel = document.getElementById('detail-panel');
   panel.style.display = 'block';
-  document.getElementById('detail-title').textContent = `${r.id} — ${r.question}`;
+  document.getElementById('detail-title').textContent = `${r.id} \u2014 ${r.question}`;
 
   const verdict = r.error ? 'error' : (r.evaluation?.verdict || 'none');
   const ev = r.evaluation || {};
@@ -610,7 +843,7 @@ function showDetail(id) {
       const label = it.is_final ? 'Final Answer' : `${toolCount} tool call${toolCount !== 1 ? 's' : ''}`;
       html += `<div class="trace-iter" id="${itId}">
         <div class="trace-iter-header" onclick="toggleIter('${itId}')">
-          <span>Iteration ${it.iteration} — ${label}</span>
+          <span>Iteration ${it.iteration} \u2014 ${label}</span>
           <span>${it.duration_sec?.toFixed(1)}s</span>
         </div>
         <div class="trace-iter-body">`;
@@ -620,7 +853,7 @@ function showDetail(id) {
       for (const tc of (it.tool_calls || [])) {
         const tcResultId = `${itId}-${tc.name}-${Math.random().toString(36).slice(2, 8)}`;
         html += `<div class="trace-tool">
-          <div class="trace-tool-header"><span>${tc.name}</span><span>${tc.duration_sec?.toFixed(2)}s · ${tc.result_length} chars · ${tc.citations_produced} cit.</span></div>
+          <div class="trace-tool-header"><span>${tc.name}</span><span>${tc.duration_sec?.toFixed(2)}s \u00B7 ${tc.result_length} chars \u00B7 ${tc.citations_produced} cit.</span></div>
           <div class="trace-tool-args">${escHtml(JSON.stringify(tc.arguments))}</div>
           ${tc.error ? `<div class="trace-tool-error">${escHtml(tc.error)}</div>` : ''}
           <div class="trace-tool-result" id="${tcResultId}" onclick="toggleResult('${tcResultId}')">${escHtml(tc.result_preview || '')}</div>
@@ -670,7 +903,7 @@ function exportMarkdown() {
   });
 }
 
-// Helpers
+// ===== Helpers =====
 function card(cls, value, label) {
   return `<div class="stat-card ${cls}"><div class="value">${value ?? 0}</div><div class="label">${label}</div></div>`;
 }
@@ -684,6 +917,32 @@ function formatDuration(sec) {
 function escHtml(s) {
   if (!s) return '';
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function formatDateHuman(isoStr) {
+  if (!isoStr) return 'Unknown date';
+  const d = new Date(isoStr);
+  if (isNaN(d)) return isoStr;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diffDays = Math.round((today - target) / 86400000);
+
+  const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays > 1 && diffDays < 7) return dayNames[d.getDay()];
+
+  return `${monthNames[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+function formatTimeHuman(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (isNaN(d)) return '';
+  return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
 }
 </script>
 </body>

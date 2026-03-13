@@ -221,19 +221,47 @@ class TracingFolderAgent(FolderAgent):
                 duration_sec=iter_dur,
             ))
 
-        # Hit max iterations
-        logger.warning("TracingAgent hit max iterations (%d)", self.max_iterations)
-        last_content = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "assistant" and msg.get("content"):
-                last_content = msg["content"]
-                break
+        # Hit max iterations — force a synthesis call
+        logger.warning("TracingAgent hit max iterations (%d). Forcing synthesis.", self.max_iterations)
+        messages.append({
+            "role": "user",
+            "content": (
+                "You have reached the maximum number of steps. Based on everything "
+                "you have read so far, provide your best answer now. Synthesize all "
+                "the information you have gathered. Do not call any more tools."
+            ),
+        })
+        final_content = ""
+        try:
+            synth_start = time.monotonic()
+            response = await self.llm_client.call_with_tools(
+                messages=messages, tools=[], model=self.model,
+            )
+            synth_dur = time.monotonic() - synth_start
+            final_content = response.choices[0].message.content or ""
+            self.trace_iterations.append(IterationTrace(
+                iteration=self.max_iterations + 1,
+                assistant_content=final_content,
+                tool_calls=[],
+                is_final=True,
+                duration_sec=synth_dur,
+            ))
+        except Exception:
+            logger.exception("Synthesis call failed after max iterations")
+
+        # Fall back to last assistant content if synthesis failed
+        if not final_content:
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant" and msg.get("content"):
+                    final_content = msg["content"]
+                    break
+
         warning = (
             "\n\n**Note:** I reached my maximum number of reasoning steps. "
             "The answer above may be incomplete."
         )
         return AgentResponse(
-            content=(last_content + warning) if last_content else (
+            content=(final_content + warning) if final_content else (
                 "I was unable to formulate a complete answer within the allowed "
                 "number of reasoning steps."
             ),

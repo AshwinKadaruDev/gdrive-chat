@@ -29,6 +29,31 @@ class DrivePermissionError(Exception):
 _ALLOWED_MIME_PREFIXES = ("application/", "text/", "image/", "video/", "audio/")
 _DRIVE_QUERY_UNSAFE = re.compile(r"['\(\)]")
 
+_MIME_ALIASES = {
+    "pdf": "application/pdf",
+    "doc": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "word": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "document": "application/vnd.google-apps.document",
+    "spreadsheet": "application/vnd.google-apps.spreadsheet",
+    "sheet": "application/vnd.google-apps.spreadsheet",
+    "sheets": "application/vnd.google-apps.spreadsheet",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "xls": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "presentation": "application/vnd.google-apps.presentation",
+    "slides": "application/vnd.google-apps.presentation",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "csv": "text/csv",
+    "text": "text/plain",
+    "txt": "text/plain",
+}
+
+
+def _normalize_mime_filter(ft: str) -> str:
+    """Expand a shorthand alias (e.g. 'pdf') to a full MIME type, or pass through."""
+    return _MIME_ALIASES.get(ft.lower().strip(), ft)
+
 
 def _validate_mime_filter(ft: str) -> str:
     """Validate a MIME type filter before interpolating into a Drive query."""
@@ -234,7 +259,7 @@ class GoogleDriveService:
 
             if file_types:
                 mime_clauses = [
-                    f"mimeType contains '{_validate_mime_filter(ft)}'"
+                    f"mimeType contains '{_validate_mime_filter(_normalize_mime_filter(ft))}'"
                     for ft in file_types
                 ]
                 q_parts.append(f"({' or '.join(mime_clauses)})")

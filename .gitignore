@@ -50,6 +50,7 @@ coverage.xml
 output.txt
 *.png
 qa_test.json
+benchmark/results_manifest.js
 
 # Claude Code
 .claude/

@@ -40,8 +40,9 @@ DRIVE_ONLY_TOOLS: list[dict] = [
                         "type": "array",
                         "items": {"type": "string"},
                         "description": (
-                            "Optional list of MIME type fragments to filter by "
-                            "(e.g., ['pdf', 'spreadsheet', 'document']). "
+                            "Optional list of file type shorthands to filter results. "
+                            "Accepted values: 'pdf', 'doc', 'docx', 'spreadsheet', 'xlsx', "
+                            "'document', 'presentation', 'csv', 'text'. "
                             "Leave empty to search all file types."
                         ),
                     },

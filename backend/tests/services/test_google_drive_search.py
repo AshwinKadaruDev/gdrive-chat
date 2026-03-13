@@ -4,7 +4,12 @@ import pytest
 import httpx
 from unittest.mock import AsyncMock, patch
 
-from app.services.google_drive import GoogleDriveService
+from app.services.google_drive import (
+    GoogleDriveService,
+    _MIME_ALIASES,
+    _normalize_mime_filter,
+    _validate_mime_filter,
+)
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
@@ -159,3 +164,39 @@ class TestExportGoogleDocAsBytes:
 
         assert isinstance(result, bytes)
         assert result == binary_content
+
+
+class TestMimeAliasNormalization:
+    """Tests for MIME alias expansion and validation."""
+
+    def test_known_aliases_expand(self):
+        """Common shorthands expand to full MIME types."""
+        assert _normalize_mime_filter("pdf") == "application/pdf"
+        assert _normalize_mime_filter("spreadsheet") == "application/vnd.google-apps.spreadsheet"
+        assert _normalize_mime_filter("document") == "application/vnd.google-apps.document"
+        assert _normalize_mime_filter("csv") == "text/csv"
+
+    def test_full_mime_passes_through(self):
+        """A full MIME type string is returned unchanged."""
+        assert _normalize_mime_filter("application/pdf") == "application/pdf"
+        assert _normalize_mime_filter("text/plain") == "text/plain"
+
+    def test_case_insensitive(self):
+        """Alias lookup is case-insensitive."""
+        assert _normalize_mime_filter("PDF") == "application/pdf"
+        assert _normalize_mime_filter("Spreadsheet") == "application/vnd.google-apps.spreadsheet"
+        assert _normalize_mime_filter(" pdf ") == "application/pdf"
+
+    def test_normalized_values_pass_validation(self):
+        """Every alias, once normalized, passes _validate_mime_filter."""
+        for alias in _MIME_ALIASES:
+            full_mime = _normalize_mime_filter(alias)
+            # Should not raise
+            _validate_mime_filter(full_mime)
+
+    def test_unknown_shorthand_fails_validation(self):
+        """An unknown shorthand passes through and fails validation."""
+        raw = _normalize_mime_filter("executable")
+        assert raw == "executable"  # passed through unchanged
+        with pytest.raises(ValueError, match="Invalid MIME type"):
+            _validate_mime_filter(raw)
