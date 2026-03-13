@@ -121,6 +121,7 @@ export interface StreamChatCallbacks {
   onStatus: (text: string) => void;
   onDelta: (text: string) => void;
   onCitations: (citations: import("@/types").Citation[]) => void;
+  onReasoning: (text: string, toolNames: string[]) => void;
   onDone: () => void;
   onError: (error: string) => void;
 }
@@ -130,6 +131,7 @@ export async function streamChat(
     message: string;
     session_id?: string;
     gdrive_folder_id?: string;
+    model?: string;
   },
   callbacks: StreamChatCallbacks
 ): Promise<void> {
@@ -193,6 +195,9 @@ export async function streamChat(
                 break;
               case "delta":
                 callbacks.onDelta(parsed.text);
+                break;
+              case "reasoning":
+                callbacks.onReasoning(parsed.text, parsed.tool_names);
                 break;
               case "citations":
                 callbacks.onCitations(parsed);

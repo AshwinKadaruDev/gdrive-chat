@@ -9,8 +9,8 @@ import os
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 # Ensure project root + backend are on sys.path
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -20,12 +20,10 @@ _BACKEND = str(Path(_PROJECT_ROOT) / "backend")
 if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
-import httpx
-import openai
-
-from app.services.agent import AgentResponse, FolderAgent
+from app.services.agent import AgentResponse, FolderAgent, _LLM_ERRORS
 from app.services.google_drive import GoogleDriveService
 from app.services.llm import LLMClient
+from app.services.llm.errors import LLMRateLimitError
 from app.services.tool_executor import Citation, execute_tool
 
 from benchmark.evaluator import evaluate_answer
@@ -37,8 +35,7 @@ from benchmark.models import (
     ToolCallTrace,
 )
 
-if TYPE_CHECKING:
-    from benchmark.config import BenchmarkConfig
+from benchmark.config import BenchmarkConfig
 
 logger = logging.getLogger(__name__)
 
@@ -85,35 +82,56 @@ class TracingFolderAgent(FolderAgent):
             iter_start = time.monotonic()
             logger.info("TracingAgent iteration %d/%d", iteration, self.max_iterations)
 
-            # Call LLM with tools
-            try:
-                response = await self.llm_client.call_with_tools(
-                    messages=messages,
-                    tools=self.tools,
-                    model=self.model,
-                )
-            except (
-                openai.RateLimitError,
-                openai.APIStatusError,
-                openai.APIConnectionError,
-                openai.APITimeoutError,
-                httpx.HTTPError,
-            ) as exc:
-                logger.error("LLM call failed on iteration %d: %s", iteration, exc)
-                iter_dur = time.monotonic() - iter_start
-                self.trace_iterations.append(IterationTrace(
-                    iteration=iteration,
-                    assistant_content=f"[LLM ERROR: {type(exc).__name__}: {exc}]",
-                    tool_calls=[],
-                    is_final=True,
-                    duration_sec=iter_dur,
-                ))
-                return AgentResponse(
-                    content="I'm sorry, something went wrong while processing your request. Please try again.",
-                    citations=all_citations,
-                    iterations=iteration,
-                    hit_limit=False,
-                )
+            # Call LLM with tools (retry on rate limit)
+            response = None
+            for llm_attempt in range(4):
+                try:
+                    response = await self.llm_client.call_with_tools(
+                        messages=messages,
+                        tools=self.tools,
+                        model=self.model,
+                    )
+                    break
+                except LLMRateLimitError as exc:
+                    if llm_attempt < 3:
+                        wait = 30 * (2 ** llm_attempt)  # 30s, 60s, 120s
+                        logger.warning(
+                            "Rate limited on iteration %d (attempt %d/4), waiting %ds",
+                            iteration, llm_attempt + 1, wait,
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        logger.error("Rate limit exceeded after 4 attempts on iteration %d", iteration)
+                        iter_dur = time.monotonic() - iter_start
+                        self.trace_iterations.append(IterationTrace(
+                            iteration=iteration,
+                            assistant_content=f"[RATE LIMITED: {exc}]",
+                            tool_calls=[],
+                            is_final=True,
+                            duration_sec=iter_dur,
+                        ))
+                        return AgentResponse(
+                            content="Rate limit exceeded. Please try again later.",
+                            citations=all_citations,
+                            iterations=iteration,
+                            hit_limit=False,
+                        )
+                except _LLM_ERRORS as exc:
+                    logger.error("LLM call failed on iteration %d: %s", iteration, exc)
+                    iter_dur = time.monotonic() - iter_start
+                    self.trace_iterations.append(IterationTrace(
+                        iteration=iteration,
+                        assistant_content=f"[LLM ERROR: {type(exc).__name__}: {exc}]",
+                        tool_calls=[],
+                        is_final=True,
+                        duration_sec=iter_dur,
+                    ))
+                    return AgentResponse(
+                        content="I'm sorry, something went wrong while processing your request. Please try again.",
+                        citations=all_citations,
+                        iterations=iteration,
+                        hit_limit=False,
+                    )
 
             choice = response.choices[0]
             assistant_message = choice.message
@@ -278,7 +296,10 @@ async def run_agent_traced(
     config: BenchmarkConfig,
 ) -> tuple[AgentResponse, AgentTrace]:
     """Create a fresh agent and run the question with tracing."""
-    llm_client = LLMClient(openai_api_key=config.openai_api_key)
+    llm_client = LLMClient(
+        openai_api_key=config.openai_api_key,
+        anthropic_api_key=config.anthropic_api_key,
+    )
     drive_service = GoogleDriveService()
     agent = TracingFolderAgent(
         llm_client=llm_client,
@@ -288,18 +309,35 @@ async def run_agent_traced(
     )
 
     start = time.monotonic()
-    response = await asyncio.wait_for(
-        agent.answer(question, folder_id, access_token),
-        timeout=config.question_timeout_sec,
-    )
-    total_time = time.monotonic() - start
+    timed_out = False
+    try:
+        response = await asyncio.wait_for(
+            agent.answer(question, folder_id, access_token),
+            timeout=config.question_timeout_sec,
+        )
+    except asyncio.TimeoutError:
+        timed_out = True
+        # Build partial response from whatever iterations completed
+        content = ""
+        for it in reversed(agent.trace_iterations):
+            if it.assistant_content:
+                content = it.assistant_content
+                break
+        response = AgentResponse(
+            content=content or "Timed out before producing an answer.",
+            citations=[],
+            iterations=len(agent.trace_iterations),
+            hit_limit=False,
+        )
 
+    total_time = time.monotonic() - start
     trace = AgentTrace(
         iterations=agent.trace_iterations,
         total_duration_sec=total_time,
         total_llm_calls=len(agent.trace_iterations),
         total_tool_calls=sum(len(it.tool_calls) for it in agent.trace_iterations),
         hit_limit=response.hit_limit,
+        timed_out=timed_out,
     )
     return response, trace
 
@@ -336,15 +374,8 @@ async def run_single(
                 # Serialize citations
                 citation_dicts = [_citation_to_dict(c) for c in agent_response.citations]
 
-                # Evaluate
-                evaluation = await evaluate_answer(
-                    question=question,
-                    agent_answer=agent_response.content,
-                    agent_citations=citation_dicts,
-                    config=config,
-                )
-
-                return QuestionResult(
+                # Check for failure conditions before evaluation
+                _base_result = dict(
                     id=qid,
                     difficulty=question["difficulty"],
                     persona=question["persona"],
@@ -358,10 +389,38 @@ async def run_single(
                     agent_hit_limit=agent_response.hit_limit,
                     duration_sec=trace.total_duration_sec,
                     trace=trace,
-                    evaluation=evaluation,
                 )
 
-            except asyncio.TimeoutError:
+                if trace.timed_out:
+                    return QuestionResult(**_base_result, error=f"Timed out after {config.question_timeout_sec}s")
+
+                if agent_response.hit_limit:
+                    return QuestionResult(**_base_result, error="Hit max iterations limit")
+
+                _inability_tools = {"report_inability", "request_clarification"}
+                _used_inability = any(
+                    tc.name in _inability_tools
+                    for it in trace.iterations
+                    for tc in it.tool_calls
+                )
+                if _used_inability:
+                    return QuestionResult(**_base_result, error="Agent could not answer the question")
+
+                # Evaluate — wrap separately to preserve agent data on eval failure
+                try:
+                    evaluation = await evaluate_answer(
+                        question=question,
+                        agent_answer=agent_response.content,
+                        agent_citations=citation_dicts,
+                        config=config,
+                    )
+                except Exception as eval_err:
+                    logger.exception("Evaluation failed for %s", qid)
+                    return QuestionResult(**_base_result, error=f"Evaluation failed: {eval_err}")
+
+                return QuestionResult(**_base_result, evaluation=evaluation)
+
+            except asyncio.CancelledError:
                 return QuestionResult(
                     id=qid,
                     difficulty=question["difficulty"],
@@ -370,10 +429,10 @@ async def run_single(
                     question=question["question"],
                     expected_answer=question["expected_answer"],
                     expected_sources=question["sources"],
-                    error=f"Timed out after {config.question_timeout_sec}s",
+                    error="Cancelled",
                 )
 
-            except (openai.RateLimitError, openai.APIConnectionError) as e:
+            except _LLM_ERRORS as e:
                 if attempt < config.max_retries - 1:
                     wait = config.retry_base_sec * (3 ** attempt)
                     logger.warning("Retrying %s in %.0fs: %s", qid, wait, e)
@@ -433,14 +492,31 @@ def save_results(path: str, results: BenchmarkResults) -> None:
         raise
 
 
-def print_progress(result: QuestionResult, completed: int, total: int) -> None:
+def _model_label(model: str) -> str:
+    """Short model label for progress output."""
+    if len(model) <= 10:
+        return model
+    # claude-opus-4-5-20251101 → opus-4.5
+    for family in ("opus", "sonnet", "haiku"):
+        idx = model.lower().find(family)
+        if idx != -1:
+            rest = model[idx + len(family):].lstrip("-").split("-")
+            if len(rest) >= 2 and rest[0].isdigit() and rest[1].isdigit():
+                return f"{family}-{rest[0]}.{rest[1]}"
+            return family
+    return model[:12]
+
+
+def print_progress(
+    result: QuestionResult, completed: int, total: int, model_prefix: str = "",
+) -> None:
     """Print color-coded progress line for a completed question."""
     if result.error:
         color = _GRAY
         verdict = "ERROR"
         score = "-"
-        iters = "-"
-        dur = "-"
+        iters = str(result.agent_iterations) if result.agent_iterations else "-"
+        dur = f"{result.duration_sec:.1f}s" if result.duration_sec else "-"
     elif result.evaluation:
         v = result.evaluation.verdict
         color = _GREEN if v == "pass" else (_YELLOW if v == "partial" else _RED)
@@ -455,9 +531,10 @@ def print_progress(result: QuestionResult, completed: int, total: int) -> None:
         iters = str(result.agent_iterations or "-")
         dur = f"{result.duration_sec:.1f}s" if result.duration_sec else "-"
 
+    prefix = f"{model_prefix:<10} " if model_prefix else ""
     q_preview = result.question[:50] + ("..." if len(result.question) > 50 else "")
     print(
-        f"[{completed}/{total}] {result.id:<4} {color}{verdict:<8}{_RESET}"
+        f"[{prefix}{completed}/{total}] {result.id:<4} {color}{verdict:<8}{_RESET}"
         f"(score: {score}, {iters} iters, {dur})  {q_preview}"
     )
 
@@ -465,6 +542,7 @@ def print_progress(result: QuestionResult, completed: int, total: int) -> None:
 async def run_benchmark(
     questions: list[dict],
     config: BenchmarkConfig,
+    model_prefix: str = "",
 ) -> BenchmarkResults:
     """Run the full benchmark: all questions with concurrency and incremental save."""
     # Load or create results
@@ -478,6 +556,7 @@ async def run_benchmark(
         # Remove non-serializable fields from config
         results.config.pop("access_token", None)
         results.config.pop("openai_api_key", None)
+        results.config.pop("anthropic_api_key", None)
 
     # Filter to pending questions
     pending = [q for q in questions if q["id"] not in results.completed_ids]
@@ -497,13 +576,111 @@ async def run_benchmark(
         for q in pending
     }
 
-    for coro in asyncio.as_completed(tasks.keys()):
-        result = await coro
-        results.add(result)
-        completed += 1
-        save_results(config.results_path, results)
-        print_progress(result, completed, total)
+    try:
+        for coro in asyncio.as_completed(tasks.keys()):
+            result = await coro
+            results.add(result)
+            completed += 1
+            save_results(config.results_path, results)
+            print_progress(result, completed, total, model_prefix=model_prefix)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        print(
+            f"\n{_YELLOW}Interrupted — saving {len(results.results)}/{total} "
+            f"results to {config.results_path}{_RESET}"
+        )
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
     results.finalize()
     save_results(config.results_path, results)
     return results
+
+
+def _build_model_config(
+    model: str, config: BenchmarkConfig, base_path: str,
+) -> BenchmarkConfig:
+    """Create a per-model BenchmarkConfig with its own results path."""
+    is_claude = "claude" in model.lower()
+
+    # Use explicit evaluator, or OpenAI for Claude agents (avoids sharing rate limit)
+    if config.evaluator_model:
+        evaluator = config.evaluator_model
+    elif is_claude:
+        evaluator = "gpt-5.2"
+    else:
+        evaluator = model
+
+    # Cap Claude concurrency at 2 due to 30k tokens/min rate limit
+    concurrency = min(config.concurrency, 2) if is_claude else config.concurrency
+
+    model_config = BenchmarkConfig(
+        folder_id=config.folder_id,
+        folder_url=config.folder_url,
+        access_token=config.access_token,
+        openai_api_key=config.openai_api_key,
+        anthropic_api_key=config.anthropic_api_key,
+        model=model,
+        evaluator_model=evaluator,
+        max_iterations=config.max_iterations,
+        concurrency=concurrency,
+        max_retries=config.max_retries,
+        retry_base_sec=config.retry_base_sec,
+        question_timeout_sec=config.question_timeout_sec,
+        qa_file=config.qa_file,
+        question_filter=config.question_filter,
+        difficulty_filter=config.difficulty_filter,
+        resume_path=config.resume_path,
+        user_email=config.user_email,
+    )
+    base_dir = os.path.dirname(base_path)
+    base_name = os.path.splitext(os.path.basename(base_path))[0]
+    model_slug = model.replace("/", "-")
+    model_config.results_path = os.path.join(base_dir, f"{base_name}_{model_slug}.json")
+    return model_config
+
+
+async def run_all_models(
+    questions: list[dict],
+    config: BenchmarkConfig,
+) -> list[BenchmarkResults]:
+    """Run benchmarks across multiple models concurrently.
+
+    Each model gets its own concurrency pool and results file.
+    Models run in parallel since they hit separate API rate limits.
+    """
+    base_path = config.results_path
+    group_id = str(uuid.uuid4())
+
+    async def _run_model(model: str) -> BenchmarkResults:
+        model_config = _build_model_config(model, config, base_path)
+        label = _model_label(model)
+        results = await run_benchmark(questions, model_config, model_prefix=label)
+        results.model = model
+        results.run_group = group_id
+        save_results(model_config.results_path, results)
+        return results
+
+    # Launch all models concurrently
+    tasks = [
+        asyncio.create_task(_run_model(model))
+        for model in config.models
+    ]
+
+    all_results: list[BenchmarkResults] = []
+    try:
+        for coro in asyncio.as_completed(tasks):
+            result = await coro
+            all_results.append(result)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        print(f"\n{_YELLOW}Interrupted — collecting completed model results...{_RESET}")
+        for task in tasks:
+            if task.done() and not task.cancelled():
+                try:
+                    all_results.append(task.result())
+                except Exception:
+                    pass
+            elif not task.done():
+                task.cancel()
+
+    return all_results

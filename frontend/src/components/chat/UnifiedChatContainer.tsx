@@ -54,16 +54,25 @@ export default function UnifiedChatContainer() {
   const { data: projects, isLoading: projectsLoading, error: projectsError } = useProjects();
 
   const folderId = selectedProject?.gdrive_folder_id ?? null;
+  const [model, setModel] = useState(() => localStorage.getItem("tenex-chat-model") || "gpt-5.2");
+
+  function handleModelChange(m: string) {
+    setModel(m);
+    localStorage.setItem("tenex-chat-model", m);
+  }
 
   const {
     messages,
     sessionId,
     isLoading: chatLoading,
     statusText,
+    reasoningSteps,
+    isReasoningCollapsed,
+    setIsReasoningCollapsed,
     sendMessage,
     selectSession,
     startNewChat,
-  } = useUnifiedChat({ folderId });
+  } = useUnifiedChat({ folderId, model });
 
   const { data: sessions } = useUnifiedChatSessions();
   const deleteMutation = useDeleteChatSession();
@@ -302,12 +311,21 @@ export default function UnifiedChatContainer() {
             </div>
 
             <ChatErrorBoundary>
-              <MessageList messages={messages} isLoading={chatLoading} statusText={statusText} />
+              <MessageList
+                messages={messages}
+                isLoading={chatLoading}
+                statusText={statusText}
+                reasoningSteps={reasoningSteps}
+                isReasoningCollapsed={isReasoningCollapsed}
+                onReasoningToggle={() => setIsReasoningCollapsed((v) => !v)}
+              />
             </ChatErrorBoundary>
             <ChatInput
               onSend={sendMessage}
               isLoading={chatLoading}
               disabled={!selectedProject}
+              model={model}
+              onModelChange={handleModelChange}
             />
           </>
         )}

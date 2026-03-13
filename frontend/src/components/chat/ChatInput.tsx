@@ -1,16 +1,21 @@
 import { useState, useRef, useEffect } from "react";
 import { Send } from "lucide-react";
+import ModelSelector from "./ModelSelector";
 
 interface ChatInputProps {
   onSend: (message: string) => void;
   isLoading: boolean;
   disabled: boolean;
+  model: string;
+  onModelChange: (model: string) => void;
 }
 
 export default function ChatInput({
   onSend,
   isLoading,
   disabled,
+  model,
+  onModelChange,
 }: ChatInputProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -61,14 +66,17 @@ export default function ChatInput({
             <p className="text-[11px] text-surface-100/40">
               Enter to send, Shift + Enter for new line
             </p>
-            <button
-              onClick={handleSubmit}
-              disabled={!value.trim() || isLoading || disabled}
-              aria-label="Send message"
-              className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-fg-primary text-fg-inverted transition-colors hover:bg-brand-500 disabled:opacity-30"
-            >
-              <Send className="h-4 w-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              <ModelSelector model={model} onChange={onModelChange} />
+              <button
+                onClick={handleSubmit}
+                disabled={!value.trim() || isLoading || disabled}
+                aria-label="Send message"
+                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-fg-primary text-fg-inverted transition-colors hover:bg-brand-500 disabled:opacity-30"
+              >
+                <Send className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

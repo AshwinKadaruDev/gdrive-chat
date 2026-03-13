@@ -377,6 +377,26 @@
   .source-missed { color: var(--fail); }
   .source-extra { color: var(--partial); }
 
+  /* Justification callout */
+  .justification-box {
+    margin-top: 12px;
+    padding: 12px 16px;
+    background: var(--bg);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    font-size: 0.85rem;
+    line-height: 1.6;
+  }
+  .justification-box .justification-label {
+    display: block;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+
   /* Trace timeline */
   .trace-timeline { margin-top: 8px; }
   .trace-iter {
@@ -443,6 +463,45 @@
   .trace-tool-result.expanded { max-height: none; }
   .trace-tool-error { color: var(--fail); }
 
+  /* Model comparison tabs */
+  .model-tab {
+    padding: 6px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .model-tab:hover { border-color: var(--accent); color: var(--text); }
+  .model-tab.active { border-color: var(--accent); color: var(--text); background: var(--surface2); }
+
+  .compare-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    margin-bottom: 20px;
+  }
+  .compare-table th, .compare-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+  .compare-table th { color: var(--text-dim); font-weight: 600; }
+  .compare-table .improved { color: var(--pass); }
+  .compare-table .degraded { color: var(--fail); }
+  .compare-table tr.active-model { background: var(--surface2); }
+  .compare-table tr:hover { background: var(--surface2); cursor: pointer; }
+
+  .model-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+  .model-chip {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    background: var(--surface2);
+    border-radius: 10px;
+    color: var(--text-dim);
+  }
+
   @media (max-width: 768px) {
     .side-by-side { grid-template-columns: 1fr; }
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
@@ -468,6 +527,10 @@
   <!-- ===== VIEW 2: Single Run Dashboard ===== -->
   <div id="dashboard" style="display:none">
     <button class="back-btn" onclick="showRunList()">&#8592; All Runs</button>
+    <div id="model-tabs" style="display:none;margin-bottom:16px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap" id="model-tabs-content"></div>
+    </div>
+    <div id="comparison-section" style="display:none"></div>
     <h2 id="run-info"></h2>
 
     <!-- Color bar -->
@@ -523,8 +586,10 @@
 
 <script>
 // ===== State =====
-let allRuns = [];   // array of full run objects
-let data = null;    // currently viewed run
+let allRuns = [];       // array of full run objects
+let data = null;        // currently viewed run
+let groupRuns = [];     // all runs in the current group (multi-model)
+let activeGroupIdx = 0; // index into groupRuns for currently displayed model
 let sortKey = 'id';
 let sortAsc = true;
 let selectedId = null;
@@ -532,12 +597,10 @@ let filtersAttached = false;
 
 // ===== Init =====
 (function init() {
-  // Load runs from manifest (built by build_viewer.py)
   if (window.__BENCHMARK_RUNS__ && window.__BENCHMARK_RUNS__.length) {
     allRuns = window.__BENCHMARK_RUNS__;
   }
 
-  // Manual file upload (always available as fallback)
   document.getElementById('manual-file-input').addEventListener('change', function() {
     if (this.files.length) {
       const reader = new FileReader();
@@ -557,6 +620,34 @@ let filtersAttached = false;
 })();
 
 
+// ===== Run Grouping =====
+
+function getRunEntries() {
+  // Group runs by run_group. Ungrouped runs become solo entries.
+  const groups = {};
+  const singles = [];
+  for (let i = 0; i < allRuns.length; i++) {
+    const run = allRuns[i];
+    const g = run.run_group;
+    if (g) {
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(i);
+    } else {
+      singles.push({ indices: [i], isGroup: false });
+    }
+  }
+  const entries = Object.values(groups).map(indices => ({ indices, isGroup: indices.length > 1 }));
+  entries.push(...singles);
+  // Sort by newest first (use first run in each entry)
+  entries.sort((a, b) => {
+    const da = allRuns[a.indices[0]].started_at || '';
+    const db = allRuns[b.indices[0]].started_at || '';
+    return db.localeCompare(da);
+  });
+  return entries;
+}
+
+
 // ===== View 1: Run List =====
 
 function renderRunList() {
@@ -573,75 +664,199 @@ function renderRunList() {
     return;
   }
 
-  // Sort newest first
-  const sorted = [...allRuns].sort((a, b) => {
-    const da = a.started_at || '';
-    const db = b.started_at || '';
-    return db.localeCompare(da);
-  });
-
+  const entries = getRunEntries();
   let html = '<div class="run-grid">';
-  for (const run of sorted) {
-    const s = run.summary || {};
-    const c = run.config || {};
-    const total = s.total || 1;
 
-    const dateStr = formatDateHuman(run.started_at);
-    const timeStr = formatTimeHuman(run.started_at);
+  for (const entry of entries) {
+    // For groups, show combined card; for singles, show normal card
+    const primaryRun = allRuns[entry.indices[0]];
+    const s = primaryRun.summary || {};
+    const c = primaryRun.config || {};
+    const total = s.total || 1;
+    const dateStr = formatDateHuman(primaryRun.started_at);
+    const timeStr = formatTimeHuman(primaryRun.started_at);
     const durationStr = formatDuration(s.total_duration_sec);
     const passRate = s.pass_rate_pct != null ? s.pass_rate_pct + '%' : '-';
-    const runIdx = sorted.indexOf(run);
+    const indicesJson = JSON.stringify(entry.indices);
 
-    html += `
-      <div class="run-card" onclick="openRunByIndex(${allRuns.indexOf(run)})">
-        <div class="run-card-header">
-          <div>
-            <div class="run-card-date">${dateStr}</div>
-            <div class="run-card-time">${timeStr}</div>
+    if (entry.isGroup) {
+      // Grouped card — show all model badges and best pass rate
+      const models = entry.indices.map(i => allRuns[i].config?.model || 'unknown');
+      const bestPassRate = Math.max(...entry.indices.map(i => allRuns[i].summary?.pass_rate_pct || 0));
+      const totalQuestions = s.total || 0;
+
+      let modelChips = models.map(m => `<span class="model-chip">${escHtml(m)}</span>`).join('');
+
+      // Aggregate pass/partial/fail across models for the bar (show first model's bar)
+      html += `
+        <div class="run-card" onclick='openGroup(${indicesJson})'>
+          <div class="run-card-header">
+            <div>
+              <div class="run-card-date">${dateStr}</div>
+              <div class="run-card-time">${timeStr} &middot; ${models.length} models</div>
+            </div>
           </div>
-          <span class="run-card-model">${escHtml(c.model || 'unknown')}</span>
-        </div>
-        <div class="run-card-bar">
-          <div class="segment pass-seg" style="width:${(s.pass||0)/total*100}%"></div>
-          <div class="segment partial-seg" style="width:${(s.partial||0)/total*100}%"></div>
-          <div class="segment fail-seg" style="width:${(s.fail||0)/total*100}%"></div>
-          <div class="segment error-seg" style="width:${(s.error||0)/total*100}%"></div>
-        </div>
-        <div class="run-card-stats">
-          <span><span class="dot dot-pass"></span> ${s.pass || 0} pass</span>
-          <span><span class="dot dot-partial"></span> ${s.partial || 0} partial</span>
-          <span><span class="dot dot-fail"></span> ${s.fail || 0} fail</span>
-        </div>
-        <div class="run-card-bottom">
-          <span>${s.total || 0} questions &middot; ${passRate} pass rate</span>
-          <span>${durationStr}</span>
-        </div>
-      </div>`;
+          <div class="model-chips">${modelChips}</div>
+          <div style="margin-top:12px">
+            ${entry.indices.map(i => {
+              const rs = allRuns[i].summary || {};
+              const rt = rs.total || 1;
+              const rm = allRuns[i].config?.model || '?';
+              return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:0.75rem;color:var(--text-dim)">
+                <span style="width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(rm)}</span>
+                <div class="run-card-bar" style="flex:1;margin-bottom:0">
+                  <div class="segment pass-seg" style="width:${(rs.pass||0)/rt*100}%"></div>
+                  <div class="segment partial-seg" style="width:${(rs.partial||0)/rt*100}%"></div>
+                  <div class="segment fail-seg" style="width:${(rs.fail||0)/rt*100}%"></div>
+                  <div class="segment error-seg" style="width:${(rs.error||0)/rt*100}%"></div>
+                </div>
+                <span>${rs.pass_rate_pct || 0}%</span>
+              </div>`;
+            }).join('')}
+          </div>
+          <div class="run-card-bottom" style="margin-top:8px">
+            <span>${totalQuestions} questions</span>
+            <span>Best: ${bestPassRate}%</span>
+          </div>
+        </div>`;
+    } else {
+      // Single run card (unchanged)
+      html += `
+        <div class="run-card" onclick='openGroup(${indicesJson})'>
+          <div class="run-card-header">
+            <div>
+              <div class="run-card-date">${dateStr}</div>
+              <div class="run-card-time">${timeStr}</div>
+            </div>
+            <span class="run-card-model">${escHtml(c.model || 'unknown')}</span>
+          </div>
+          <div class="run-card-bar">
+            <div class="segment pass-seg" style="width:${(s.pass||0)/total*100}%"></div>
+            <div class="segment partial-seg" style="width:${(s.partial||0)/total*100}%"></div>
+            <div class="segment fail-seg" style="width:${(s.fail||0)/total*100}%"></div>
+            <div class="segment error-seg" style="width:${(s.error||0)/total*100}%"></div>
+          </div>
+          <div class="run-card-stats">
+            <span><span class="dot dot-pass"></span> ${s.pass || 0} pass</span>
+            <span><span class="dot dot-partial"></span> ${s.partial || 0} partial</span>
+            <span><span class="dot dot-fail"></span> ${s.fail || 0} fail</span>
+          </div>
+          <div class="run-card-bottom">
+            <span>${s.total || 0} questions &middot; ${passRate} pass rate</span>
+            <span>${durationStr}</span>
+          </div>
+        </div>`;
+    }
   }
   html += '</div>';
   container.innerHTML = html;
 }
 
-function openRunByIndex(idx) {
-  openRun(allRuns[idx]);
+function openGroup(indices) {
+  groupRuns = indices.map(i => allRuns[i]);
+  activeGroupIdx = 0;
+  data = groupRuns[0];
+  selectedId = null;
+  sortKey = 'id';
+  sortAsc = true;
+  document.getElementById('run-list-view').style.display = 'none';
+  document.getElementById('dashboard').style.display = 'block';
+  renderGroupTabs();
+  renderComparison();
+  renderDashboard();
 }
 
 function openRun(run) {
+  // For manual upload — treat as single ungrouped run
+  groupRuns = [run];
+  activeGroupIdx = 0;
   data = run;
   selectedId = null;
   sortKey = 'id';
   sortAsc = true;
   document.getElementById('run-list-view').style.display = 'none';
   document.getElementById('dashboard').style.display = 'block';
+  renderGroupTabs();
+  renderComparison();
   renderDashboard();
 }
 
 function showRunList() {
   data = null;
+  groupRuns = [];
   document.getElementById('dashboard').style.display = 'none';
   document.getElementById('run-list-view').style.display = 'block';
-  // Reset detail panel
   document.getElementById('detail-panel').style.display = 'none';
+}
+
+function switchModel(idx) {
+  activeGroupIdx = idx;
+  data = groupRuns[idx];
+  selectedId = null;
+  document.getElementById('detail-panel').style.display = 'none';
+  renderGroupTabs();
+  renderComparison();
+  renderDashboard();
+}
+
+
+// ===== Model Tabs & Comparison =====
+
+function renderGroupTabs() {
+  const tabsEl = document.getElementById('model-tabs');
+  const content = document.getElementById('model-tabs-content');
+  if (groupRuns.length <= 1) {
+    tabsEl.style.display = 'none';
+    return;
+  }
+  tabsEl.style.display = 'block';
+  let html = '';
+  for (let i = 0; i < groupRuns.length; i++) {
+    const model = groupRuns[i].config?.model || 'unknown';
+    const active = i === activeGroupIdx ? ' active' : '';
+    html += `<button class="model-tab${active}" onclick="switchModel(${i})">${escHtml(model)}</button>`;
+  }
+  content.innerHTML = html;
+}
+
+function renderComparison() {
+  const section = document.getElementById('comparison-section');
+  if (groupRuns.length <= 1) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = 'block';
+
+  let html = '<h3 style="margin-bottom:8px">Model Comparison</h3>';
+  html += '<table class="compare-table"><thead><tr>';
+  html += '<th>Model</th><th>Pass</th><th>Partial</th><th>Fail</th><th>Error</th><th>Pass Rate</th><th>Avg Score</th><th>Avg Iters</th><th>Duration</th>';
+  html += '</tr></thead><tbody>';
+
+  // Find best pass rate for highlighting
+  const passRates = groupRuns.map(r => r.summary?.pass_rate_pct || 0);
+  const bestRate = Math.max(...passRates);
+
+  for (let i = 0; i < groupRuns.length; i++) {
+    const r = groupRuns[i];
+    const s = r.summary || {};
+    const model = r.config?.model || 'unknown';
+    const isActive = i === activeGroupIdx;
+    const isBest = (s.pass_rate_pct || 0) === bestRate && groupRuns.length > 1;
+
+    html += `<tr class="${isActive ? 'active-model' : ''}" onclick="switchModel(${i})">`;
+    html += `<td><strong>${escHtml(model)}</strong></td>`;
+    html += `<td style="color:var(--pass)">${s.pass || 0}</td>`;
+    html += `<td style="color:var(--partial)">${s.partial || 0}</td>`;
+    html += `<td style="color:var(--fail)">${s.fail || 0}</td>`;
+    html += `<td>${s.error || 0}</td>`;
+    html += `<td${isBest ? ' style="color:var(--pass);font-weight:600"' : ''}>${s.pass_rate_pct || 0}%</td>`;
+    html += `<td>${(s.avg_answer_score || 0).toFixed ? s.avg_answer_score.toFixed(1) : s.avg_answer_score || 0}</td>`;
+    html += `<td>${(s.avg_iterations || 0).toFixed ? s.avg_iterations.toFixed(1) : s.avg_iterations || 0}</td>`;
+    html += `<td>${formatDuration(s.total_duration_sec)}</td>`;
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  section.innerHTML = html;
 }
 
 
@@ -651,7 +866,6 @@ function renderDashboard() {
   const s = data.summary || {};
   const c = data.config || {};
 
-  // Run info — human readable
   const dateStr = formatDateHuman(data.started_at);
   const timeStr = formatTimeHuman(data.started_at);
   const endTimeStr = formatTimeHuman(data.completed_at);
@@ -661,7 +875,6 @@ function renderDashboard() {
     ` | Model: ${c.model || '?'}` +
     ` | ${s.total || 0} questions`;
 
-  // Color bar
   const total = s.total || 1;
   document.getElementById('color-bar').innerHTML =
     `<div class="segment pass-seg" style="width:${(s.pass||0)/total*100}%"></div>` +
@@ -669,7 +882,6 @@ function renderDashboard() {
     `<div class="segment fail-seg" style="width:${(s.fail||0)/total*100}%"></div>` +
     `<div class="segment error-seg" style="width:${(s.error||0)/total*100}%"></div>`;
 
-  // Stats
   document.getElementById('stats-grid').innerHTML = [
     card('pass', s.pass, 'Passed'),
     card('partial', s.partial, 'Partial'),
@@ -681,7 +893,6 @@ function renderDashboard() {
     card('', formatDuration(s.total_duration_sec), 'Total Time'),
   ].join('');
 
-  // Difficulty table
   const diffBody = document.querySelector('#diff-table tbody');
   diffBody.innerHTML = '';
   for (const diff of ['easy', 'medium', 'hard']) {
@@ -692,14 +903,12 @@ function renderDashboard() {
     diffBody.appendChild(tr);
   }
 
-  // Reset filters
   document.getElementById('filter-difficulty').value = '';
   document.getElementById('filter-verdict').value = '';
   document.getElementById('filter-search').value = '';
 
   renderTable();
 
-  // Attach event listeners once
   if (!filtersAttached) {
     filtersAttached = true;
     document.getElementById('filter-difficulty').addEventListener('change', renderTable);
@@ -733,7 +942,6 @@ function renderTable() {
     duration: r.duration_sec ?? 0,
   }));
 
-  // Filter
   if (diffFilter) rows = rows.filter(r => r.difficulty === diffFilter);
   if (verdictFilter) rows = rows.filter(r => r.verdict === verdictFilter);
   if (search) rows = rows.filter(r =>
@@ -742,7 +950,6 @@ function renderTable() {
     r.id.toLowerCase().includes(search)
   );
 
-  // Sort
   rows.sort((a, b) => {
     let va = a[sortKey], vb = b[sortKey];
     if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb||'').toLowerCase(); }
@@ -770,7 +977,6 @@ function renderTable() {
     body.appendChild(tr);
   }
 
-  // Update sort arrows
   document.querySelectorAll('#results-table th[data-sort]').forEach(th => {
     const arrow = th.querySelector('.sort-arrow');
     arrow.textContent = th.dataset.sort === sortKey ? (sortAsc ? '\u25B2' : '\u25BC') : '';
@@ -792,11 +998,12 @@ function showDetail(id) {
 
   let html = '';
 
-  // Verdict + scores
+  // Verdict + scores + justification
   html += `<div class="detail-section">
     <span class="verdict-badge verdict-${verdict}" style="font-size:0.9rem;padding:4px 16px">${verdict.toUpperCase()}</span>
     ${ev.answer_score != null ? `&nbsp; Answer: <strong>${ev.answer_score}</strong>/100 &nbsp; Source: <strong>${ev.source_score}</strong>/100` : ''}
     ${r.error ? `<p style="color:var(--fail);margin-top:8px">${escHtml(r.error)}</p>` : ''}
+    ${ev.justification ? `<div class="justification-box"><span class="justification-label">Justification</span>${escHtml(ev.justification)}</div>` : ''}
   </div>`;
 
   // Side-by-side answers

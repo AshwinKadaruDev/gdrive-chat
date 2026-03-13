@@ -13,8 +13,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
-import openai
+from app.services.llm.errors import LLM_ERRORS as _LLM_ERRORS
 
 from app.services.agent_tools import DRIVE_AGENT_TOOLS
 from app.services.tool_executor import Citation, execute_tool
@@ -162,7 +161,7 @@ class FolderAgent:
                     tools=self.tools,
                     model=self.model,
                 )
-            except (openai.RateLimitError, openai.APIStatusError, openai.APIConnectionError, openai.APITimeoutError, httpx.HTTPError) as exc:
+            except _LLM_ERRORS as exc:
                 logger.error("LLM call failed on iteration %d: %s: %s", iteration, type(exc).__name__, exc, exc_info=True)
                 return AgentResponse(
                     content=(
@@ -349,8 +348,10 @@ class FolderAgent:
         for iteration in range(1, self.max_iterations + 1):
             logger.info("Agent iteration %d/%d (streaming)", iteration, self.max_iterations)
 
-            # Stream the LLM call — yields text deltas (for final answers) and a response_complete event
+            # Stream the LLM call — buffer text deltas until we know whether
+            # this iteration ends with tool calls (reasoning) or a final answer.
             llm_response = None
+            buffered_deltas: list[str] = []
             try:
                 async for event in self.llm_client.stream_call_with_tools(
                     messages=messages,
@@ -358,10 +359,10 @@ class FolderAgent:
                     model=self.model,
                 ):
                     if event.type == "text_delta" and event.text:
-                        yield ("delta", event.text)
+                        buffered_deltas.append(event.text)
                     elif event.type == "response_complete":
                         llm_response = event.response
-            except (openai.RateLimitError, openai.APIStatusError, openai.APIConnectionError, openai.APITimeoutError, httpx.HTTPError) as exc:
+            except _LLM_ERRORS as exc:
                 logger.error("[AGENT-STREAM] LLM call failed on iteration %d: %s: %s", iteration, type(exc).__name__, exc, exc_info=True)
                 yield ("delta", "I'm sorry, something went wrong while processing your request. Please try again.")
                 # Deduplicate and serialize citations collected so far
@@ -403,8 +404,10 @@ class FolderAgent:
             if assistant_message.content:
                 messages.append({"role": "assistant", "content": assistant_message.content})
 
-            # Final answer — no tool calls (text was already streamed via deltas)
+            # Final answer — no tool calls: flush buffered deltas to the client
             if not assistant_message.tool_calls:
+                for chunk in buffered_deltas:
+                    yield ("delta", chunk)
                 logger.info(
                     "[AGENT-STREAM] Final answer: %d chars, %d citations",
                     len(assistant_message.content or ""), len(all_citations),
@@ -453,6 +456,14 @@ class FolderAgent:
                 "tool_calls": tool_call_records,
                 "_raw_output_items": assistant_message._raw_output_items,
             })
+
+            # Emit reasoning text when the model returned text alongside tool calls
+            if assistant_message.content and assistant_message.content.strip():
+                tool_names = [tc.function.name for tc in assistant_message.tool_calls]
+                yield ("reasoning", {
+                    "text": assistant_message.content,
+                    "tool_names": tool_names,
+                })
 
             for tc in assistant_message.tool_calls:
                 tool_name = tc.function.name

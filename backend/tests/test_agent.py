@@ -7,7 +7,6 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import httpx
 import pytest
 
 from app.services.agent import AgentResponse, FolderAgent
@@ -19,6 +18,7 @@ from app.services.llm import (
     MessageContent,
     ToolCall,
 )
+from app.services.llm.errors import LLMConnectionError
 from app.services.tool_executor import Citation
 
 
@@ -146,7 +146,7 @@ class TestAnswerNonStreaming:
     async def test_llm_error_returns_graceful_response(self):
         """When the LLM call raises, agent returns a graceful error message."""
         llm = AsyncMock()
-        llm.call_with_tools = AsyncMock(side_effect=httpx.ConnectError("API down"))
+        llm.call_with_tools = AsyncMock(side_effect=LLMConnectionError("API down"))
 
         agent = _make_agent(llm)
         result = await agent.answer("Q?", "proj-1", "token-1", session_id="sess-1")
@@ -218,7 +218,7 @@ class TestAnswerStreaming:
         llm = AsyncMock()
 
         async def failing_stream(**kwargs):
-            raise httpx.ConnectError("Stream failed")
+            raise LLMConnectionError("Stream failed")
             # Make it an async generator
             yield  # pragma: no cover
 
@@ -236,6 +236,60 @@ class TestAnswerStreaming:
         # Error message in delta
         delta_texts = [d for t, d in events if t == "delta"]
         assert any("went wrong" in str(d) for d in delta_texts)
+
+    async def test_streaming_emits_reasoning_with_tool_calls(self):
+        """When the LLM returns text alongside tool calls, a reasoning event is emitted."""
+        llm = AsyncMock()
+
+        call_count = 0
+
+        async def stream_dispatch(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Iteration 1: text + tool call → should emit reasoning
+                yield LLMStreamEvent(
+                    type="response_complete",
+                    response=_make_llm_response(
+                        content="Let me check the folder structure first.",
+                        tool_calls=[
+                            ToolCall(
+                                id="tc-1",
+                                function=FunctionCall(
+                                    name="get_folder_structure",
+                                    arguments=json.dumps({}),
+                                ),
+                            )
+                        ],
+                    ),
+                )
+            else:
+                # Iteration 2: final answer
+                yield LLMStreamEvent(type="text_delta", text="Here is the answer.")
+                yield LLMStreamEvent(
+                    type="response_complete",
+                    response=_make_llm_response(content="Here is the answer."),
+                )
+
+        llm.stream_call_with_tools = stream_dispatch
+
+        agent = _make_agent(llm)
+        events = []
+        with patch("app.services.agent.execute_tool", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = ("folder structure...", [])
+            async for event_type, data in agent.answer_streaming("Q?", "proj-1", "token-1", session_id="sess-1"):
+                events.append((event_type, data))
+
+        # Verify reasoning event was emitted
+        reasoning_events = [(t, d) for t, d in events if t == "reasoning"]
+        assert len(reasoning_events) == 1
+        assert reasoning_events[0][1]["text"] == "Let me check the folder structure first."
+        assert reasoning_events[0][1]["tool_names"] == ["get_folder_structure"]
+
+        # Verify normal events still present
+        event_types = [e[0] for e in events]
+        assert "delta" in event_types
+        assert "done" in event_types
 
     async def test_streaming_max_iterations_includes_citations(self):
         """When streaming hits max iterations, synthesis is streamed and citations are included."""

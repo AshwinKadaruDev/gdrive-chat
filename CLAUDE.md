@@ -47,7 +47,8 @@ frontend/src/
 
 ```bash
 # Dev servers
-.\run.ps1                                        # start backend + frontend
+.\run.ps1                                        # Windows: start backend + frontend
+./run.sh                                         # macOS/Linux: start backend + frontend
 
 # Backend
 cd backend && python -m pytest --tb=short -q     # run backend tests

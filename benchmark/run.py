@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(_PROJECT_ROOT) / "backend"))
 
 from benchmark.auth import resolve_access_token
 from benchmark.config import BenchmarkConfig, _extract_folder_id, parse_args
-from benchmark.runner import run_benchmark, save_results
+from benchmark.runner import run_all_models, run_benchmark, save_results
 
 
 def _load_questions(qa_file: str) -> list[dict]:
@@ -138,6 +138,18 @@ async def main() -> int:
     settings = get_settings()
     openai_api_key = settings.OPENAI_API_KEY
 
+    # Resolve Anthropic API key if claude models are requested
+    anthropic_api_key = getattr(settings, 'ANTHROPIC_API_KEY', None)
+
+    # Resolve models list
+    if args.models:
+        models = [m.strip() for m in args.models.split(",")]
+    else:
+        models = [args.model]
+        # Auto-add Anthropic model when API key is available
+        if anthropic_api_key and "claude" not in args.model.lower():
+            models.append("claude-opus-4-5-20251101")
+
     # Generate results path
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%S")
     results_path = os.path.join(args.results_dir, f"{timestamp}.json")
@@ -149,7 +161,9 @@ async def main() -> int:
         folder_url=folder_url,
         access_token=access_token,
         openai_api_key=openai_api_key,
-        model=args.model,
+        anthropic_api_key=anthropic_api_key,
+        model=models[0],
+        models=models,
         evaluator_model=args.evaluator_model,
         max_iterations=args.max_iterations,
         concurrency=args.concurrency,
@@ -164,6 +178,10 @@ async def main() -> int:
     if args.resume and not args.fresh:
         config.results_path = args.resume
 
+    # Resolve evaluator model for single-model runs
+    if len(models) == 1 and config.evaluator_model is None:
+        config.evaluator_model = config.model
+
     # Print header
     q_label = f"{len(questions)} questions"
     if args.questions:
@@ -171,24 +189,52 @@ async def main() -> int:
     elif args.difficulty:
         q_label += f" (difficulty: {args.difficulty})"
 
-    print(f"Benchmark: {q_label} | concurrency: {config.concurrency} | model: {config.model}")
+    models_label = ", ".join(models)
+    if len(models) > 1:
+        print(f"Benchmark: {q_label} x {len(models)} models | concurrency: {config.concurrency}/model | {models_label}")
+    else:
+        print(f"Benchmark: {q_label} | concurrency: {config.concurrency} | model: {models_label}")
     print("-" * 60)
     print()
 
     # Run
-    results = await run_benchmark(questions, config)
+    if len(models) > 1:
+        all_results = await run_all_models(questions, config)
+        for results in all_results:
+            print(f"\n--- Model: {results.model} ---")
+            _print_summary(results)
+        has_failures = any(
+            r.error or (r.evaluation and r.evaluation.verdict == "fail")
+            for results in all_results
+            for r in results.results
+        )
+    else:
+        results = await run_benchmark(questions, config)
+        _print_summary(results)
+        has_failures = any(
+            r.error or (r.evaluation and r.evaluation.verdict == "fail")
+            for r in results.results
+        )
 
-    # Print summary
-    _print_summary(results)
+    # Rebuild viewer manifest so viewer.html picks up new results
+    _rebuild_manifest()
 
-    # Exit code
-    has_failures = any(
-        r.error or (r.evaluation and r.evaluation.verdict == "fail")
-        for r in results.results
-    )
     return 1 if has_failures else 0
 
 
+def _rebuild_manifest() -> None:
+    """Rebuild results_manifest.js for viewer.html."""
+    try:
+        from benchmark.build_viewer import main as build_manifest
+        build_manifest()
+    except Exception as e:
+        print(f"Warning: could not rebuild viewer manifest: {e}")
+
+
 if __name__ == "__main__":
-    exit_code = asyncio.run(main())
+    try:
+        exit_code = asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        exit_code = 130
     sys.exit(exit_code)

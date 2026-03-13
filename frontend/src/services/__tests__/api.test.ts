@@ -7,6 +7,7 @@ function makeCallbacks(overrides: Partial<StreamChatCallbacks> = {}): StreamChat
     onStatus: vi.fn(),
     onDelta: vi.fn(),
     onCitations: vi.fn(),
+    onReasoning: vi.fn(),
     onDone: vi.fn(),
     onError: vi.fn(),
     ...overrides,

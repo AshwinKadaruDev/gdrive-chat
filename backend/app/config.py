@@ -29,8 +29,10 @@ class Settings(BaseSettings):
     # OpenAI
     OPENAI_API_KEY: str
 
-    # Anthropic (optional) — TODO: Re-enable Anthropic support — currently unused
+    # Anthropic (optional)
     ANTHROPIC_API_KEY: Optional[str] = None
+    ANTHROPIC_THINKING_BUDGET: int = 10000
+    ANTHROPIC_EFFORT: str = "high"  # "low", "medium", "high"
 
     # Security
     ENCRYPTION_KEY: str

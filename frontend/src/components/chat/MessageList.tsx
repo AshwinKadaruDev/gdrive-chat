@@ -1,21 +1,25 @@
 import { useEffect, useRef } from "react";
 import MessageBubble from "./MessageBubble";
 import type { Message } from "@/types";
+import type { ReasoningStep } from "@/hooks/useUnifiedChat";
 import { MessageSquare } from "lucide-react";
 
 interface MessageListProps {
   messages: Message[];
   isLoading: boolean;
   statusText?: string | null;
+  reasoningSteps?: ReasoningStep[];
+  isReasoningCollapsed?: boolean;
+  onReasoningToggle?: () => void;
 }
 
-export default function MessageList({ messages, isLoading, statusText }: MessageListProps) {
+export default function MessageList({ messages, isLoading, statusText, reasoningSteps, isReasoningCollapsed, onReasoningToggle }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, statusText]);
+  }, [messages, statusText, reasoningSteps]);
 
   if (messages.length === 0 && !isLoading) {
     return (
@@ -37,9 +41,26 @@ export default function MessageList({ messages, isLoading, statusText }: Message
       className="flex-1 overflow-y-auto px-4 py-6"
     >
       <div className="mx-auto max-w-3xl space-y-6">
-        {messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
-        ))}
+        {messages.map((message, index) => {
+          const isLastAssistant =
+            index === messages.length - 1 && message.role === "assistant";
+          const hasReasoning =
+            isLastAssistant &&
+            reasoningSteps &&
+            reasoningSteps.length > 0 &&
+            onReasoningToggle;
+
+          return (
+            <MessageBubble
+              key={message.id}
+              message={message}
+              reasoningSteps={hasReasoning ? reasoningSteps : undefined}
+              isReasoningCollapsed={hasReasoning ? isReasoningCollapsed : undefined}
+              onReasoningToggle={hasReasoning ? onReasoningToggle : undefined}
+              isReasoningLoading={hasReasoning ? isLoading : undefined}
+            />
+          );
+        })}
 
         {isLoading && statusText && (
           <div className="flex items-center gap-2 py-2">

@@ -98,7 +98,7 @@ async def execute_tool(
         return result_str, citations
     except Exception as exc:
         truncated_args = {k: str(v)[:200] for k, v in tool_args.items()}
-        logger.exception("[TOOL] %s failed (args=%s): %s: %s", tool_name, truncated_args, type(exc).__name__, exc)
+        logger.warning("[TOOL] %s failed (args=%s): %s: %s", tool_name, truncated_args, type(exc).__name__, exc)
         return f"Error executing {tool_name}: {type(exc).__name__}: {exc}", []
 
 

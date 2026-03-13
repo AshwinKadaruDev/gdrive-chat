@@ -8,8 +8,15 @@ import {
 } from "@/services/api";
 import type { Message, Citation } from "@/types";
 
+export interface ReasoningStep {
+  text: string;
+  toolNames: string[];
+  timestamp: number;
+}
+
 interface UseChatOptions {
   folderId: string | null;
+  model?: string;
 }
 
 export function useUnifiedChatSessions() {
@@ -19,11 +26,13 @@ export function useUnifiedChatSessions() {
   });
 }
 
-export function useUnifiedChat({ folderId }: UseChatOptions) {
+export function useUnifiedChat({ folderId, model }: UseChatOptions) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [statusText, setStatusText] = useState<string | null>(null);
+  const [reasoningSteps, setReasoningSteps] = useState<ReasoningStep[]>([]);
+  const [isReasoningCollapsed, setIsReasoningCollapsed] = useState(false);
   const queryClient = useQueryClient();
   const streamingContentRef = useRef("");
   const streamingSessionIdRef = useRef<string | null>(null);
@@ -87,12 +96,15 @@ export function useUnifiedChat({ folderId }: UseChatOptions) {
       setMessages([...base, userMessage, assistantPlaceholder]);
       setIsLoading(true);
       setStatusText(null);
+      setReasoningSteps([]);
+      setIsReasoningCollapsed(false);
       streamingContentRef.current = "";
 
       const params: Record<string, string | undefined> = {
         message: content,
         session_id: sessionId ?? undefined,
         gdrive_folder_id: sessionId ? undefined : folderId!,
+        model,
       };
 
       try {
@@ -106,8 +118,15 @@ export function useUnifiedChat({ folderId }: UseChatOptions) {
           onStatus: (text) => {
             setStatusText(text);
           },
+          onReasoning: (text, toolNames) => {
+            setReasoningSteps((prev) => [
+              ...prev,
+              { text, toolNames, timestamp: Date.now() },
+            ]);
+          },
           onDelta: (text) => {
             setStatusText(null);
+            setIsReasoningCollapsed(true);
             streamingContentRef.current += text;
             const currentContent = streamingContentRef.current;
             setMessages((prev) =>
@@ -174,17 +193,19 @@ export function useUnifiedChat({ folderId }: UseChatOptions) {
         setStatusText(null);
       }
     },
-    [folderId, sessionId, isLoading, queryClient]
+    [folderId, sessionId, isLoading, queryClient, model]
   );
 
   const selectSession = useCallback((newSessionId: string | null) => {
     setSessionId(newSessionId);
     setMessages([]);
+    setReasoningSteps([]);
   }, []);
 
   const startNewChat = useCallback(() => {
     setSessionId(null);
     setMessages([]);
+    setReasoningSteps([]);
   }, []);
 
   return {
@@ -192,6 +213,9 @@ export function useUnifiedChat({ folderId }: UseChatOptions) {
     sessionId,
     isLoading,
     statusText,
+    reasoningSteps,
+    isReasoningCollapsed,
+    setIsReasoningCollapsed,
     sendMessage,
     selectSession,
     startNewChat,

@@ -4,9 +4,11 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import CitationTooltip from "./CitationTooltip";
+import ReasoningSteps from "./ReasoningSteps";
 import TenexLogo from "@/components/TenexLogo";
 import { useAuth } from "@/hooks/useAuth";
 import type { Message, Citation } from "@/types";
+import type { ReasoningStep } from "@/hooks/useUnifiedChat";
 
 const citationSanitizeSchema = {
   ...defaultSchema,
@@ -16,6 +18,10 @@ const citationSanitizeSchema = {
 
 interface MessageBubbleProps {
   message: Message;
+  reasoningSteps?: ReasoningStep[];
+  isReasoningCollapsed?: boolean;
+  onReasoningToggle?: () => void;
+  isReasoningLoading?: boolean;
 }
 
 const markdownComponents = {
@@ -159,7 +165,7 @@ function SourcesCollapsible({ citations }: { citations: Citation[] }) {
   );
 }
 
-export default function MessageBubble({ message }: MessageBubbleProps) {
+export default function MessageBubble({ message, reasoningSteps, isReasoningCollapsed, onReasoningToggle, isReasoningLoading }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const user = useAuth((s) => s.user);
 
@@ -224,6 +230,16 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
           {timestamp}
         </span>
       </div>
+      {reasoningSteps && reasoningSteps.length > 0 && onReasoningToggle && (
+        <div className="mb-2">
+          <ReasoningSteps
+            steps={reasoningSteps}
+            isCollapsed={isReasoningCollapsed ?? false}
+            onToggle={onReasoningToggle}
+            isLoading={isReasoningLoading ?? false}
+          />
+        </div>
+      )}
       <div className="py-1">
         <div className="text-[15px] leading-relaxed text-cream">
           {renderedContent}

@@ -176,11 +176,13 @@ async def chat(
     try:
         llm_client = LLMClient(
             openai_api_key=settings.OPENAI_API_KEY,
+            anthropic_api_key=settings.ANTHROPIC_API_KEY,
         )
         drive_service = GoogleDriveService()
         agent = FolderAgent(
             llm_client=llm_client,
             drive_service=drive_service,
+            model=body.model or settings.AGENT_MODEL,
         )
         folder_id = session.gdrive_folder_id or body.gdrive_folder_id or ""
 
@@ -390,11 +392,13 @@ async def chat_stream(
         try:
             llm_client = LLMClient(
                 openai_api_key=settings.OPENAI_API_KEY,
+                anthropic_api_key=settings.ANTHROPIC_API_KEY,
             )
             drive_service = GoogleDriveService()
             agent = FolderAgent(
                 llm_client=llm_client,
                 drive_service=drive_service,
+                model=body.model or settings.AGENT_MODEL,
             )
             folder_id = session_gdrive_folder_id or body.gdrive_folder_id or ""
 
@@ -413,6 +417,8 @@ async def chat_stream(
                 elif event_type == "delta":
                     full_answer.append(data)
                     yield f"event: delta\ndata: {json.dumps({'text': data})}\n\n"
+                elif event_type == "reasoning":
+                    yield f"event: reasoning\ndata: {json.dumps(data)}\n\n"
                 elif event_type == "citations":
                     final_citations = data
                     yield f"event: citations\ndata: {json.dumps(data)}\n\n"

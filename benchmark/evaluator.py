@@ -1,4 +1,4 @@
-"""LLM-as-judge evaluator using OpenAI function calling."""
+"""LLM-as-judge evaluator supporting OpenAI and Anthropic providers."""
 
 from __future__ import annotations
 
@@ -13,8 +13,6 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from openai import AsyncOpenAI
-
 from benchmark.models import Evaluation
 
 if TYPE_CHECKING:
@@ -22,6 +20,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# OpenAI function calling schema (also used as source for Anthropic conversion)
 EVALUATION_TOOL_SCHEMA = {
     "type": "function",
     "name": "submit_evaluation",
@@ -32,6 +31,7 @@ EVALUATION_TOOL_SCHEMA = {
             "verdict",
             "answer_score",
             "answer_reasoning",
+            "justification",
             "source_score",
             "source_reasoning",
             "missing_facts",
@@ -46,20 +46,30 @@ EVALUATION_TOOL_SCHEMA = {
                 "type": "string",
                 "enum": ["pass", "partial", "fail"],
                 "description": (
-                    "pass = correct & complete, "
-                    "partial = mostly correct but missing details or minor errors, "
-                    "fail = wrong or significantly incomplete"
+                    "pass = substantively correct and complete (score 80+), "
+                    "partial = mostly correct but has meaningful omissions or minor errors (score 50-79), "
+                    "fail = fundamentally wrong or missing the core answer (score <50)"
                 ),
             },
             "answer_score": {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 100,
-                "description": "0-100 score for answer quality. 90+ = pass, 60-89 = partial, <60 = fail",
+                "description": (
+                    "0-100 score for answer quality. 80+ = pass, 50-79 = partial, <50 = fail. "
+                    "Be generous — correct answers with different formatting or extra detail should score high."
+                ),
             },
             "answer_reasoning": {
                 "type": "string",
-                "description": "Explanation of why the answer received this score",
+                "description": "Detailed explanation of why the answer received this score",
+            },
+            "justification": {
+                "type": "string",
+                "description": (
+                    "A clear 1-2 sentence explanation of WHY this specific verdict (pass/partial/fail) "
+                    "was chosen. Focus on the key factor(s) that determined the verdict."
+                ),
             },
             "source_score": {
                 "type": "integer",
@@ -104,6 +114,20 @@ EVALUATION_TOOL_SCHEMA = {
         },
     },
 }
+
+
+def _is_claude_model(model: str) -> bool:
+    """Check if a model name is a Claude/Anthropic model."""
+    return "claude" in model.lower()
+
+
+def _to_anthropic_tool(schema: dict) -> dict:
+    """Convert OpenAI function tool schema to Anthropic tool format."""
+    return {
+        "name": schema["name"],
+        "description": schema["description"],
+        "input_schema": schema["parameters"],
+    }
 
 
 def pre_match_sources(
@@ -152,13 +176,17 @@ def _build_evaluator_prompt(
 5. The AGENT'S SOURCES (files the agent actually cited)
 6. PRE-MATCHED SOURCE ANALYSIS (programmatic fuzzy matching results)
 
-Your job is to judge whether the agent's answer is correct, complete, and
-properly sourced. Be strict but fair:
-- Minor formatting differences are OK
-- Rounding differences in numbers are OK (e.g., $2.14M vs $2,140,500)
-- The agent may provide EXTRA correct information — that's fine
-- But MISSING key facts or WRONG numbers are failures
-- Source coverage matters: the agent should cite the right files
+Your job is to judge whether the agent's answer is correct and properly sourced.
+
+SCORING PHILOSOPHY — be fair and pragmatic:
+- Focus on whether the answer is SUBSTANTIVELY CORRECT, not whether it matches word-for-word
+- Minor formatting, phrasing, or structural differences are perfectly fine — PASS
+- The agent providing EXTRA correct detail beyond the expected answer is a GOOD thing — PASS
+- Rounding differences in numbers are OK (e.g., $2.14M vs $2,140,500) — PASS
+- If all the KEY FACTS are present but some minor/supplementary details differ — PASS
+- Only mark PARTIAL if there are meaningful omissions that would impact the usefulness of the answer
+- Only mark FAIL if the answer is fundamentally wrong, contains incorrect numbers/facts, or misses the core point entirely
+- Source coverage matters but should not override answer correctness — a correct answer from the right sources is a pass even if extra sources were used
 
 QUESTION:
 {question}
@@ -180,7 +208,71 @@ PRE-MATCHED SOURCE ANALYSIS:
 - Missed (not cited): {json.dumps(pre_matched['missed'])}
 - Extra (cited but not expected): {json.dumps(pre_matched['extra'])}
 
-Call the submit_evaluation function with your assessment."""
+Call the submit_evaluation function with your assessment. Include a clear justification explaining WHY you chose this specific verdict."""
+
+
+async def _evaluate_with_openai(prompt: str, config: BenchmarkConfig) -> Evaluation | None:
+    """Evaluate using OpenAI Responses API with function calling."""
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=config.openai_api_key)
+
+    for attempt in range(3):
+        try:
+            response = await client.responses.create(
+                model=config.evaluator_model,
+                input=[{"role": "user", "content": prompt}],
+                tools=[EVALUATION_TOOL_SCHEMA],
+                tool_choice={"type": "function", "name": "submit_evaluation"},
+                reasoning={"effort": "high"},
+            )
+
+            for item in response.output:
+                if item.type == "function_call" and item.name == "submit_evaluation":
+                    eval_data = json.loads(item.arguments)
+                    return Evaluation(**eval_data)
+
+            logger.warning("OpenAI evaluator: no function call (attempt %d)", attempt + 1)
+
+        except Exception as exc:
+            logger.warning("OpenAI evaluator failed (attempt %d): %s", attempt + 1, exc)
+            if attempt == 2:
+                return None
+
+    return None
+
+
+async def _evaluate_with_anthropic(prompt: str, config: BenchmarkConfig) -> Evaluation | None:
+    """Evaluate using Anthropic Messages API with tool_use."""
+    import anthropic
+
+    client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
+    tool = _to_anthropic_tool(EVALUATION_TOOL_SCHEMA)
+
+    for attempt in range(3):
+        try:
+            response = await client.messages.create(
+                model=config.evaluator_model,
+                max_tokens=16384,
+                messages=[{"role": "user", "content": prompt}],
+                tools=[tool],
+                tool_choice={"type": "any"},
+            )
+
+            for block in response.content:
+                if block.type == "tool_use" and block.name == "submit_evaluation":
+                    return Evaluation(**block.input)
+
+            logger.warning("Anthropic evaluator: no tool_use block (attempt %d)", attempt + 1)
+
+        except Exception as exc:
+            logger.warning("Anthropic evaluator failed (attempt %d): %s", attempt + 1, exc)
+            if attempt == 2:
+                return None
+            import asyncio
+            await asyncio.sleep(30 * (attempt + 1))  # 30s, 60s backoff
+
+    return None
 
 
 async def evaluate_answer(
@@ -191,6 +283,7 @@ async def evaluate_answer(
 ) -> Evaluation | None:
     """Evaluate the agent's answer using an LLM judge.
 
+    Routes to Anthropic or OpenAI based on the evaluator model name.
     Returns an Evaluation or None if the evaluator fails after retries.
     """
     found, missed, extra = pre_match_sources(
@@ -207,29 +300,11 @@ async def evaluate_answer(
         pre_matched={"found": found, "missed": missed, "extra": extra},
     )
 
-    client = AsyncOpenAI(api_key=config.openai_api_key)
+    use_anthropic = (
+        _is_claude_model(config.evaluator_model)
+        and config.anthropic_api_key
+    )
 
-    for attempt in range(3):
-        try:
-            response = await client.responses.create(
-                model=config.evaluator_model,
-                input=[{"role": "user", "content": prompt}],
-                tools=[EVALUATION_TOOL_SCHEMA],
-                tool_choice={"type": "function", "name": "submit_evaluation"},
-                reasoning={"effort": "high"},
-            )
-
-            # Extract function call from response output
-            for item in response.output:
-                if item.type == "function_call" and item.name == "submit_evaluation":
-                    eval_data = json.loads(item.arguments)
-                    return Evaluation(**eval_data)
-
-            logger.warning("Evaluator response had no function call (attempt %d)", attempt + 1)
-
-        except Exception:
-            logger.exception("Evaluator failed (attempt %d)", attempt + 1)
-            if attempt == 2:
-                return None
-
-    return None
+    if use_anthropic:
+        return await _evaluate_with_anthropic(prompt, config)
+    return await _evaluate_with_openai(prompt, config)

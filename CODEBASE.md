@@ -45,9 +45,11 @@ tenex/
 ├── CLAUDE.md                         # Project instructions for Claude Code
 ├── CODEBASE.md                       # ← this file
 ├── Dockerfile                        # API image (multi-stage: frontend build + backend)
-├── deploy.ps1                        # Build + push Docker image to ACR
-├── run.ps1                           # Start backend + frontend dev servers
-├── setup.ps1                         # One-time environment setup (7 steps)
+├── deploy.ps1 / deploy.sh           # Build + push Docker image to ACR
+├── run.ps1 / run.sh                 # Start backend + frontend dev servers
+├── setup.ps1 / setup.sh             # One-time environment setup (7 steps)
+├── test.ps1 / test.sh               # Run all backend + frontend tests
+├── production-db.ps1 / production-db.sh  # Production database migration manager
 ├── .env / .env.example               # Environment variables
 │
 ├── backend/
@@ -83,7 +85,15 @@ tenex/
 │   │   │   ├── agent.py             # FolderAgent — ReAct loop (max 15 iters), DRIVE_SYSTEM_PROMPT
 │   │   │   ├── agent_tools.py       # Tool definitions: DRIVE_ONLY (3), SHARED (9). Composed: DRIVE_AGENT_TOOLS (12)
 │   │   │   ├── tool_executor.py     # Tool dispatch + Citation dataclass + 12 handler functions
-│   │   │   ├── llm.py              # LLMClient (OpenAI Responses API, normalized response format)
+│   │   │   ├── llm/                 # LLM provider package (strategy pattern)
+│   │   │   │   ├── __init__.py      # Backward-compat re-exports (LLMClient, types, errors)
+│   │   │   │   ├── types.py         # Normalized response dataclasses (ToolCall, LLMResponse, LLMStreamEvent, etc.)
+│   │   │   │   ├── errors.py        # Unified error hierarchy (LLMError, LLMRateLimitError, etc.)
+│   │   │   │   ├── base.py          # Abstract LLMProvider base class
+│   │   │   │   ├── registry.py      # Model→provider routing via @register_provider decorator
+│   │   │   │   ├── anthropic_provider.py  # Anthropic Messages API (Claude models)
+│   │   │   │   ├── openai_provider.py     # OpenAI Responses API (GPT models, catch-all)
+│   │   │   │   └── client.py        # Thin LLMClient router (delegates to providers)
 │   │   │   └── google_drive.py      # Drive API v3 (list, download, export, metadata, search_files)
 │   │   └── utils/
 │   │       ├── security.py          # Fernet encryption, stateless sessions, token refresh
@@ -94,8 +104,11 @@ tenex/
 │   │   ├── test_drive_agent_tools.py # Agent tool definition tests
 │   │   ├── test_drive_tool_handlers.py # Drive tool handler tests
 │   │   ├── test_spreadsheet_tools.py # Spreadsheet tool handler tests
-│   │   ├── test_llm_responses_api.py # LLM Responses API integration tests
-│   │   ├── test_llm_streaming.py    # LLM streaming tests
+│   │   ├── test_llm_responses_api.py # OpenAI provider tests (conversion, normalization, call)
+│   │   ├── test_llm_anthropic.py    # Anthropic provider tests (conversion, normalization, call, streaming)
+│   │   ├── test_llm_streaming.py    # OpenAI streaming tests
+│   │   ├── test_llm_client.py       # LLMClient routing and provider selection tests
+│   │   ├── test_llm_registry.py     # Provider registry can_handle and routing tests
 │   │   ├── test_schemas.py          # Pydantic schema validation tests
 │   │   ├── test_tool_arg_validation.py # Tool argument validation tests
 │   │   ├── test_access_token_refresh.py # OAuth token refresh tests
@@ -156,7 +169,7 @@ tenex/
 │               └── TopBar.tsx       # Top bar: Knowledge/Chat tabs + user avatar + theme toggle + logout
 │
 ├── benchmark/
-│   ├── run_benchmark.ps1            # Launcher script (activates venv, sets PYTHONPATH, forwards args)
+│   ├── run_benchmark.ps1 / run_benchmark.sh  # Launcher script (activates venv, sets PYTHONPATH, forwards args)
 │   ├── run.py                       # CLI entry point — loads questions, resolves auth, runs benchmark
 │   ├── config.py                    # BenchmarkConfig dataclass + CLI argument parsing
 │   ├── runner.py                    # TracingFolderAgent + orchestration (concurrency, retries, incremental save)
@@ -186,7 +199,9 @@ User → React SPA (Vite :5173) → FastAPI API (:8000) ──→ PostgreSQL (us
                                      │
                                      ├──→ Google OAuth 2.0 (login, token refresh)
                                      ├──→ FolderAgent (ReAct loop) ──→ Google Drive (file search/read)
-                                     │                               ──→ GPT-5.2 (OpenAI Responses API, reasoning=xhigh)
+                                     │                               ──→ LLMClient (provider pattern)
+                                     │                                     ├── AnthropicProvider (Claude)
+                                     │                                     └── OpenAIProvider (GPT, catch-all)
                                      │
                                      └──→ Sync endpoint (file count discovery via Drive API)
 ```
@@ -416,32 +431,30 @@ All defined in OpenAI function calling schema format (converted to Responses API
 
 **Tool execution** (`tool_executor.py`): Dispatches to `_handle_*` async functions (12 total). Drive tools call `drive_service` directly for file search/download/parsing. Spreadsheet tools download files via `_download_spreadsheet_bytes` (returns `bytes, file_name, mime_type, web_view_link`; caches in `tool_cache`) and parse with openpyxl. **Citation policy**: content-reading tools (`get_file_content`, `read_spreadsheet_rows`, `search_spreadsheet`, `get_column_stats`, etc.) produce citations; discovery-only tools (`search_drive`, `get_folder_structure`, `get_file_metadata`) do not.
 
-### LLM Client (`services/llm.py`)
+### LLM Client (`services/llm/`)
 
-`LLMClient` wraps the **OpenAI Responses API** (not Chat Completions) and normalizes output to a common format.
+Provider-per-class architecture (strategy pattern). Each provider is self-contained; adding a new one requires no changes to existing code.
 
-**Provider selection**:
-- Anthropic support is currently disabled (TODO: re-enable)
-- All requests route to OpenAI Responses API (gpt-5.2 for agent, gpt-4o-mini for simple completion)
-- Claude model names are remapped to gpt-5.2 in `_call_openai` as a safety fallback
+**Package structure**:
+- `client.py` — Thin `LLMClient` router that delegates to providers via the registry
+- `base.py` — Abstract `LLMProvider` base class (call_with_tools, stream_call_with_tools, complete, can_handle)
+- `registry.py` — `@register_provider` decorator + `get_provider_for_model()` routing
+- `anthropic_provider.py` — Anthropic Messages API (Claude models, thinking, beta headers)
+- `openai_provider.py` — OpenAI Responses API (GPT models, catch-all for non-Claude)
+- `types.py` — Normalized response dataclasses (ToolCall, LLMResponse, LLMStreamEvent, etc.)
+- `errors.py` — Unified error hierarchy (LLMError → LLMRateLimitError, LLMAPIError, etc.)
+- `__init__.py` — Re-exports everything for backward compatibility (`from app.services.llm import LLMClient` still works)
 
-**OpenAI Responses API specifics**:
-- Passes `reasoning: {"effort": "xhigh"}` for extended thinking
-- Preserves `_raw_output_items` (including reasoning blocks) on `MessageContent` for multi-turn context — these are fed back as input items on subsequent turns
-- System message extracted and passed as `instructions=` parameter
-- Tools converted from nested Chat Completions format to flat Responses API format
-- Streaming: yields `text_delta` events only when no function calls detected (final answer), plus `response_complete` with full response
+**Provider selection**: `LLMClient._get_provider(model)` uses `can_handle()` to route Claude models to `AnthropicProvider` and everything else to `OpenAIProvider`. Falls back to any available provider if the preferred one isn't configured.
 
-**Normalized response structure** (dataclasses):
+**Error handling**: Each provider wraps SDK-specific exceptions (e.g., `openai.RateLimitError`) into the unified hierarchy (`LLMRateLimitError`). Consumers catch `LLMError` instead of importing SDK types.
+
+**Adding a new provider**: Implement `LLMProvider`, decorate with `@register_provider`, add instantiation in `LLMClient.__init__`.
+
+**Normalized response structure** (dataclasses in `types.py`):
 ```
 LLMResponse → choices: [Choice → message: MessageContent → content: str | None, tool_calls: [ToolCall → id, function: FunctionCall → name, arguments]]
 ```
-
-**Message conversion** (`_convert_messages_to_responses_api`):
-- System messages → `instructions` parameter
-- Assistant messages with `_raw_output_items` → re-injected as-is (preserves reasoning)
-- Assistant messages without raw items → reconstructed from content + tool_calls
-- Tool result messages → `function_call_output` items with `call_id` and `output`
 
 ---
 
@@ -578,6 +591,9 @@ Dark/light theme via CSS variables + `darkMode: "class"`. Tailwind 3.4 with cust
 | `GOOGLE_CLIENT_SECRET` | Yes | Google OAuth client secret |
 | `GOOGLE_REDIRECT_URI` | Yes | OAuth callback URL (default: `http://localhost:8000/auth/google/callback`) |
 | `OPENAI_API_KEY` | Yes | OpenAI key (LLM reasoning) |
+| `ANTHROPIC_API_KEY` | No | Anthropic key (enables Claude model selection) |
+| `ANTHROPIC_THINKING_BUDGET` | No | Extended thinking token budget (default: `10000`) |
+| `ANTHROPIC_EFFORT` | No | Anthropic effort level: `low`, `medium`, `high` (default: `high`) |
 | `ENCRYPTION_KEY` | Yes | Fernet key for token encryption at rest |
 | `FRONTEND_URL` | No | Frontend origin for OAuth redirect + cookie security (default: `http://localhost:5173`) |
 | `AZURE_STORAGE_CONNECTION_STRING` | No | Azure Blob Storage (optional, unused currently) |
@@ -636,7 +652,8 @@ run.py (CLI entry point)
         ├── run_agent_traced()  → creates fresh agent, runs question with timeout
         ├── run_single()        → agent + evaluator for one question, with retry (exponential backoff)
         ├── run_benchmark()     → concurrent execution via asyncio.Semaphore, incremental JSON save
-        └── evaluator.py        → LLM-as-judge via OpenAI Responses API function calling
+        ├── run_all_models()    → multi-model benchmark with shared run_group UUID
+        └── evaluator.py        → LLM-as-judge via OpenAI or Anthropic (auto-routed by model name)
 ```
 
 ### TracingFolderAgent (`runner.py`)
@@ -645,12 +662,13 @@ Subclass of `FolderAgent` that re-implements `answer()` to capture timing and to
 
 ### Evaluator (`evaluator.py`)
 
-LLM-as-judge using OpenAI Responses API with forced function calling (`submit_evaluation`). The evaluator:
+LLM-as-judge supporting both OpenAI and Anthropic as evaluation providers. Routes automatically based on the evaluator model name (Claude → Anthropic Messages API with `tool_use`, everything else → OpenAI Responses API with function calling). The evaluator:
 1. Pre-matches expected vs actual sources via fuzzy basename matching
 2. Sends a structured prompt with question, expected answer, agent answer, and source analysis
-3. Returns an `Evaluation`: verdict (`pass`/`partial`/`fail`), answer_score (0-100), source_score (0-100), missing/hallucinated facts, source coverage details
+3. Forces a `submit_evaluation` tool call and returns an `Evaluation`: verdict, answer_score (0-100), source_score (0-100), justification, missing/hallucinated facts, source coverage details
+4. Skips evaluation for error cases (hit_limit, report_inability, request_clarification) — these are marked as errors directly in the runner
 
-Scoring thresholds: 90+ = pass, 60-89 = partial, <60 = fail.
+Scoring thresholds: 80+ = pass, 50-79 = partial, <50 = fail. Scoring philosophy is generous — correct answers with different formatting, extra detail, or minor rounding differences score high.
 
 ### Data Models (`models.py`)
 
@@ -674,9 +692,14 @@ All dataclasses have `to_dict()` / `from_dict()` for JSON serialization.
 
 Each question has: `id`, `difficulty`, `persona`, `department`, `question`, `expected_answer`, `sources` (expected file paths).
 
+### Multi-Model Runs
+
+When `--models gpt-5.2,claude-opus-4-5-20251101` is passed, `run_all_models()` runs the full question set once per model sequentially. All runs in the batch share a `run_group` UUID. Each model's evaluator defaults to matching its own provider (OpenAI evaluates OpenAI agent runs, Anthropic evaluates Anthropic agent runs) unless `--evaluator-model` is explicitly set.
+
 ### Results Viewer
 
-- `viewer.html`: Self-contained dark-mode dashboard (no build step). Shows run list, summary stats, per-question details with expandable agent traces and evaluation breakdowns.
+- `viewer.html`: Self-contained dark-mode dashboard (no build step). Shows run list, summary stats, per-question details with expandable agent traces, evaluation breakdowns, and justification boxes.
+- **Multi-model comparison**: Runs sharing a `run_group` are grouped visually in the run list with model chips and per-model progress bars. Opening a group shows model tabs + a side-by-side comparison table (pass rate, avg score, avg iterations, duration) with the best model highlighted.
 - `build_viewer.py`: Scans `results/*.json` → generates `results_manifest.js` (embeds all runs as `window.__BENCHMARK_RUNS__`). Viewer loads this on page open, or accepts manual JSON upload.
 - Results are saved incrementally during a run (atomic writes via `tempfile` + `os.replace`).
 

@@ -30,10 +30,12 @@ class BenchmarkConfig:
     folder_url: str
     access_token: str
     openai_api_key: str
+    anthropic_api_key: str | None = None
     model: str = "gpt-5.2"
-    evaluator_model: str = "gpt-5.2"
+    models: list[str] = field(default_factory=lambda: ["gpt-5.2"])
+    evaluator_model: str | None = None  # None = match agent model
     max_iterations: int = 15
-    concurrency: int = 3
+    concurrency: int = 5
     max_retries: int = 3
     retry_base_sec: float = 5.0
     question_timeout_sec: float = 300.0
@@ -67,8 +69,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--concurrency",
         type=int,
-        default=3,
-        help="Number of concurrent questions (default: 3)",
+        default=5,
+        help="Number of concurrent questions per model (default: 5)",
     )
     parser.add_argument(
         "--model",
@@ -76,9 +78,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Model for the agent (default: gpt-5.2)",
     )
     parser.add_argument(
+        "--models",
+        help="Comma-separated list of models to benchmark (e.g. gpt-5.2,claude-opus-4-5-20251101)",
+    )
+    parser.add_argument(
         "--evaluator-model",
-        default="gpt-5.2",
-        help="Model for the evaluator (default: gpt-5.2)",
+        default=None,
+        help="Model for the evaluator (default: same as agent model)",
     )
     parser.add_argument(
         "--max-iterations",

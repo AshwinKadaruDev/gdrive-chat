@@ -1,4 +1,4 @@
-"""Tests for the OpenAI Responses API migration in LLMClient."""
+"""Tests for the OpenAI provider — tool/message conversion, normalization, call."""
 
 import json
 from types import SimpleNamespace
@@ -12,6 +12,7 @@ from app.services.llm import (
     MessageContent,
     ToolCall,
 )
+from app.services.llm.openai_provider import OpenAIProvider
 
 
 # ------------------------------------------------------------------ #
@@ -60,7 +61,7 @@ SAMPLE_TOOLS = [
 
 class TestConvertToolsToResponsesAPI:
     def test_nested_to_flat(self):
-        result = LLMClient._convert_tools_to_responses_api(SAMPLE_TOOLS)
+        result = OpenAIProvider.convert_tools(SAMPLE_TOOLS)
 
         assert len(result) == 2
         assert result[0] == {
@@ -88,7 +89,7 @@ class TestConvertMessagesToResponsesAPI:
             {"role": "system", "content": "You are helpful."},
             {"role": "user", "content": "Hello"},
         ]
-        instructions, items = LLMClient._convert_messages_to_responses_api(messages)
+        instructions, items = OpenAIProvider.convert_messages(messages)
 
         assert instructions == "You are helpful."
         assert len(items) == 1
@@ -96,7 +97,7 @@ class TestConvertMessagesToResponsesAPI:
 
     def test_user_passthrough(self):
         messages = [{"role": "user", "content": "What is revenue?"}]
-        instructions, items = LLMClient._convert_messages_to_responses_api(messages)
+        instructions, items = OpenAIProvider.convert_messages(messages)
 
         assert instructions is None
         assert items == [{"role": "user", "content": "What is revenue?"}]
@@ -114,13 +115,13 @@ class TestConvertMessagesToResponsesAPI:
                 "_raw_output_items": raw,
             }
         ]
-        _, items = LLMClient._convert_messages_to_responses_api(messages)
+        _, items = OpenAIProvider.convert_messages(messages)
 
         assert items == raw
 
     def test_assistant_without_raw_items_text_only(self):
         messages = [{"role": "assistant", "content": "Here is the answer."}]
-        _, items = LLMClient._convert_messages_to_responses_api(messages)
+        _, items = OpenAIProvider.convert_messages(messages)
 
         assert len(items) == 1
         assert items[0] == {
@@ -143,7 +144,7 @@ class TestConvertMessagesToResponsesAPI:
                 ],
             }
         ]
-        _, items = LLMClient._convert_messages_to_responses_api(messages)
+        _, items = OpenAIProvider.convert_messages(messages)
 
         assert len(items) == 2
         assert items[0] == {
@@ -162,7 +163,7 @@ class TestConvertMessagesToResponsesAPI:
         messages = [
             {"role": "tool", "tool_call_id": "call_abc", "content": "Found 3 results."}
         ]
-        _, items = LLMClient._convert_messages_to_responses_api(messages)
+        _, items = OpenAIProvider.convert_messages(messages)
 
         assert items == [
             {"type": "function_call_output", "call_id": "call_abc", "output": "Found 3 results."}
@@ -193,7 +194,7 @@ def _make_reasoning_item(text: str) -> SimpleNamespace:
 class TestNormalizeOpenAIResponse:
     def test_text_only(self):
         response = SimpleNamespace(output=[_make_message_item("The answer is 42.")])
-        result = LLMClient._normalize_openai_response(response)
+        result = OpenAIProvider.normalize_response(response)
 
         msg = result.choices[0].message
         assert msg.content == "The answer is 42."
@@ -206,7 +207,7 @@ class TestNormalizeOpenAIResponse:
                 _make_function_call_item("fc_2", "get_file_content", '{"file_id": "abc"}'),
             ]
         )
-        result = LLMClient._normalize_openai_response(response)
+        result = OpenAIProvider.normalize_response(response)
 
         msg = result.choices[0].message
         assert msg.content is None
@@ -222,10 +223,8 @@ class TestNormalizeOpenAIResponse:
             _make_message_item("Done."),
         ]
         response = SimpleNamespace(output=items)
-        result = LLMClient._normalize_openai_response(response)
+        result = OpenAIProvider.normalize_response(response)
 
-        # Raw items are serialized to dicts (not original Pydantic objects)
-        # to avoid SDK serialization issues on multi-turn conversations.
         raw = result.choices[0].message._raw_output_items
         assert len(raw) == 2
         assert all(isinstance(r, dict) for r in raw)
@@ -239,7 +238,7 @@ class TestNormalizeOpenAIResponse:
             _make_message_item("I'll search for that."),
         ]
         response = SimpleNamespace(output=items)
-        result = LLMClient._normalize_openai_response(response)
+        result = OpenAIProvider.normalize_response(response)
 
         msg = result.choices[0].message
         assert msg.content == "I'll search for that."
@@ -250,7 +249,7 @@ class TestNormalizeOpenAIResponse:
 
 
 # ------------------------------------------------------------------ #
-# _call_openai integration
+# _call_openai integration (via LLMClient delegation)
 # ------------------------------------------------------------------ #
 
 
@@ -259,13 +258,17 @@ class TestCallOpenAI:
     async def test_uses_responses_api(self):
         client = _make_client()
 
+        # Get the OpenAI provider instance from the client
+        from app.services.llm.openai_provider import OpenAIProvider as OAI
+        provider = list(client._providers.values())[0]
+
         mock_response = SimpleNamespace(
             output=[_make_message_item("Hello")]
         )
-        client._openai_client.responses = MagicMock()
-        client._openai_client.responses.create = AsyncMock(return_value=mock_response)
+        provider._client.responses = MagicMock()
+        provider._client.responses.create = AsyncMock(return_value=mock_response)
 
-        result = await client._call_openai(
+        result = await provider.call_with_tools(
             messages=[
                 {"role": "system", "content": "Be helpful."},
                 {"role": "user", "content": "Hi"},
@@ -277,8 +280,8 @@ class TestCallOpenAI:
         )
 
         # Verify responses.create was called (not chat.completions.create)
-        client._openai_client.responses.create.assert_awaited_once()
-        call_kwargs = client._openai_client.responses.create.call_args[1]
+        provider._client.responses.create.assert_awaited_once()
+        call_kwargs = provider._client.responses.create.call_args[1]
 
         assert call_kwargs["model"] == "gpt-5.2"
         assert call_kwargs["instructions"] == "Be helpful."
@@ -291,16 +294,20 @@ class TestCallOpenAI:
         assert result.choices[0].message.content == "Hello"
 
     @pytest.mark.asyncio
-    async def test_claude_fallback_model(self):
+    async def test_claude_model_passes_through(self):
+        """Claude model names are no longer remapped — they route to Anthropic instead."""
         client = _make_client()
+
+        from app.services.llm.openai_provider import OpenAIProvider as OAI
+        provider = list(client._providers.values())[0]
 
         mock_response = SimpleNamespace(
             output=[_make_message_item("Response")]
         )
-        client._openai_client.responses = MagicMock()
-        client._openai_client.responses.create = AsyncMock(return_value=mock_response)
+        provider._client.responses = MagicMock()
+        provider._client.responses.create = AsyncMock(return_value=mock_response)
 
-        await client._call_openai(
+        await provider.call_with_tools(
             messages=[{"role": "user", "content": "test"}],
             tools=[],
             model="claude-sonnet-4-5-20250929",
@@ -308,5 +315,6 @@ class TestCallOpenAI:
             temperature=0.1,
         )
 
-        call_kwargs = client._openai_client.responses.create.call_args[1]
-        assert call_kwargs["model"] == "gpt-5.2"
+        call_kwargs = provider._client.responses.create.call_args[1]
+        # Model name passes through as-is (routing happens in LLMClient)
+        assert call_kwargs["model"] == "claude-sonnet-4-5-20250929"

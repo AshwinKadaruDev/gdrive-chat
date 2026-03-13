@@ -53,6 +53,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[uuid.UUID] = None
     project_id: Optional[uuid.UUID] = None
     gdrive_folder_id: Optional[str] = None
+    model: Optional[str] = None
 
 
 class ChatResponse(BaseModel):

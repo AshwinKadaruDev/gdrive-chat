@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.llm import LLMClient, LLMStreamEvent
+from app.services.llm.openai_provider import OpenAIProvider
 
 
 def _make_event(event_type: str, **kwargs):
@@ -50,10 +51,17 @@ def _make_response_completed(output_items):
     return _make_event("response.completed", response=response)
 
 
+def _make_openai_provider() -> OpenAIProvider:
+    """Create an OpenAIProvider with a mock client (no real SDK needed)."""
+    provider = OpenAIProvider.__new__(OpenAIProvider)
+    provider._client = AsyncMock()
+    return provider
+
+
 class TestStreamOpenAI:
     async def test_yields_text_delta_events(self):
         """Text deltas should be yielded when there are no function calls."""
-        mock_openai = AsyncMock()
+        provider = _make_openai_provider()
 
         async def fake_stream():
             yield _make_output_item_added("message")
@@ -67,13 +75,10 @@ class TestStreamOpenAI:
         stream_cm = AsyncMock()
         stream_cm.__aenter__ = AsyncMock(return_value=fake_stream())
         stream_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_openai.responses.create = AsyncMock(return_value=stream_cm)
-
-        client = LLMClient.__new__(LLMClient)
-        client._openai_client = mock_openai
+        provider._client.responses.create = AsyncMock(return_value=stream_cm)
 
         events = []
-        async for event in client._stream_openai(
+        async for event in provider.stream_call_with_tools(
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             model="gpt-5.2",
@@ -89,7 +94,7 @@ class TestStreamOpenAI:
 
     async def test_suppresses_deltas_during_tool_calling(self):
         """Text deltas should be suppressed when function calls are present."""
-        mock_openai = AsyncMock()
+        provider = _make_openai_provider()
 
         async def fake_stream():
             yield _make_output_item_added("function_call")
@@ -102,13 +107,10 @@ class TestStreamOpenAI:
         stream_cm = AsyncMock()
         stream_cm.__aenter__ = AsyncMock(return_value=fake_stream())
         stream_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_openai.responses.create = AsyncMock(return_value=stream_cm)
-
-        client = LLMClient.__new__(LLMClient)
-        client._openai_client = mock_openai
+        provider._client.responses.create = AsyncMock(return_value=stream_cm)
 
         events = []
-        async for event in client._stream_openai(
+        async for event in provider.stream_call_with_tools(
             messages=[{"role": "user", "content": "Hi"}],
             tools=[{"function": {"name": "search", "parameters": {}}}],
             model="gpt-5.2",
@@ -122,7 +124,7 @@ class TestStreamOpenAI:
 
     async def test_yields_response_complete(self):
         """A response_complete event should be yielded at the end."""
-        mock_openai = AsyncMock()
+        provider = _make_openai_provider()
 
         async def fake_stream():
             yield _make_output_item_added("message")
@@ -133,13 +135,10 @@ class TestStreamOpenAI:
         stream_cm = AsyncMock()
         stream_cm.__aenter__ = AsyncMock(return_value=fake_stream())
         stream_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_openai.responses.create = AsyncMock(return_value=stream_cm)
-
-        client = LLMClient.__new__(LLMClient)
-        client._openai_client = mock_openai
+        provider._client.responses.create = AsyncMock(return_value=stream_cm)
 
         events = []
-        async for event in client._stream_openai(
+        async for event in provider.stream_call_with_tools(
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             model="gpt-5.2",
@@ -154,7 +153,7 @@ class TestStreamOpenAI:
 
     async def test_error_propagation(self):
         """Errors from the OpenAI API should propagate."""
-        mock_openai = AsyncMock()
+        provider = _make_openai_provider()
 
         async def failing_stream():
             raise RuntimeError("API error")
@@ -163,13 +162,10 @@ class TestStreamOpenAI:
         stream_cm = AsyncMock()
         stream_cm.__aenter__ = AsyncMock(return_value=failing_stream())
         stream_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_openai.responses.create = AsyncMock(return_value=stream_cm)
-
-        client = LLMClient.__new__(LLMClient)
-        client._openai_client = mock_openai
+        provider._client.responses.create = AsyncMock(return_value=stream_cm)
 
         with pytest.raises(RuntimeError, match="API error"):
-            async for _ in client._stream_openai(
+            async for _ in provider.stream_call_with_tools(
                 messages=[{"role": "user", "content": "Hi"}],
                 tools=[],
                 model="gpt-5.2",

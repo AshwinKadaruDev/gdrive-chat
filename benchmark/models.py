@@ -61,6 +61,7 @@ class AgentTrace:
     total_llm_calls: int
     total_tool_calls: int
     hit_limit: bool
+    timed_out: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +70,7 @@ class AgentTrace:
             "total_llm_calls": self.total_llm_calls,
             "total_tool_calls": self.total_tool_calls,
             "hit_limit": self.hit_limit,
+            "timed_out": self.timed_out,
         }
 
 
@@ -87,12 +89,14 @@ class Evaluation:
     found_sources: list[str]
     missed_sources: list[str]
     extra_sources: list[str]
+    justification: str = ""
 
     def to_dict(self) -> dict:
         return {
             "verdict": self.verdict,
             "answer_score": self.answer_score,
             "answer_reasoning": self.answer_reasoning,
+            "justification": self.justification,
             "source_score": self.source_score,
             "source_reasoning": self.source_reasoning,
             "missing_facts": self.missing_facts,
@@ -169,6 +173,7 @@ class QuestionResult:
                 total_llm_calls=t["total_llm_calls"],
                 total_tool_calls=t["total_tool_calls"],
                 hit_limit=t["hit_limit"],
+                timed_out=t.get("timed_out", False),
             )
         evaluation = Evaluation.from_dict(d["evaluation"]) if d.get("evaluation") else None
         return cls(
@@ -195,6 +200,8 @@ class BenchmarkResults:
     """Container for a full benchmark run."""
 
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    run_group: str = ""  # Shared across multi-model runs for grouping in viewer
+    model: str = ""
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     completed_at: str | None = None
     config: dict = field(default_factory=dict)
@@ -262,6 +269,8 @@ class BenchmarkResults:
     def to_dict(self) -> dict:
         return {
             "run_id": self.run_id,
+            "run_group": self.run_group,
+            "model": self.model,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "config": self.config,
@@ -274,6 +283,8 @@ class BenchmarkResults:
         results = [QuestionResult.from_dict(r) for r in d.get("results", [])]
         br = cls(
             run_id=d.get("run_id", str(uuid.uuid4())),
+            run_group=d.get("run_group", ""),
+            model=d.get("model", ""),
             started_at=d.get("started_at", ""),
             completed_at=d.get("completed_at"),
             config=d.get("config", {}),
